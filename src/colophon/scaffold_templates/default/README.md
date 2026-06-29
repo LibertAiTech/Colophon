@@ -41,7 +41,7 @@ PYTHONPATH=../colophon_repo/src python -m colophon build --config colophon.yml
 - `content/pages/about.md` is a static Markdown page rendered at `/about/`.
 - `content/pages/features.yml` is a structured YAML page rendered at `/features/`.
 - `content/pages/template-variables.md` explains the variables templates receive.
-- `content/pages/images.md` demonstrates logical images, generated variants, direct static assets, and placeholders.
+- `content/pages/images.md` demonstrates logical images, generated variants, and direct static assets.
 - `content/pages/hooks.md` shows `python::` expressions loaded from `site_hooks.py`.
 - `content/pages/deploy.md` explains `content/deploy.example.yaml` and dry-run deploys.
 - `content/posts/` contains two posts so archive, tags, related posts, and feed output are visible.

@@ -1,8 +1,4 @@
-"""Mastodon site, timeline, and comment normalization.
-
-Raw site/page Mastodon settings flow into template-ready timeline options and
-comment thread metadata shared by content rendering and deploy write-back.
-"""
+"""Strict Mastodon site, timeline, and comment config loaders."""
 
 from __future__ import annotations
 
@@ -10,21 +6,19 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
 
-from .utils import bool_value, copy_value, deep_merge, mapping_value, trim_url
+from .errors import ContentError
+from .utils import copy_value, deep_merge, trim_url
 
 
 DEFAULT_MASTODON_TIMELINE = {
     "enabled": False,
-    "mtContainerId": "mastodon-timeline",
-    "instanceUrl": "",
-    "timelineType": "profile",
-    "userId": "",
-    "profileName": "",
-    "defaultTheme": "dark",
-    "maxNbPostFetch": "20",
-    "maxNbPostShow": "5",
-    "hideReblog": True,
-    "hideReplies": True,
+    "container_id": "mastodon-timeline",
+    "timeline_type": "profile",
+    "default_theme": "dark",
+    "max_posts_fetch": 20,
+    "max_posts_show": 5,
+    "hide_reblogs": True,
+    "hide_replies": True,
 }
 
 
@@ -49,10 +43,61 @@ DEFAULT_MASTODON = {
 }
 
 
-PLACEHOLDER_MASTODON_HOSTS = {"mastodon.example"}
+MASTODON_SITE_KEYS = frozenset(DEFAULT_MASTODON)
+MASTODON_TIMELINE_KEYS = frozenset(DEFAULT_MASTODON_TIMELINE)
+MASTODON_COMMENT_KEYS = frozenset((*DEFAULT_MASTODON_COMMENTS, "status_url"))
 
 
-def normalize_mastodon_host(value: Any) -> str:
+def reject_unknown(raw: Mapping[str, Any], allowed: frozenset[str], path: str) -> None:
+    unknown = sorted(str(key) for key in raw if key not in allowed)
+
+    if unknown:
+        raise ContentError(f"{path} contains unsupported key(s): {', '.join(unknown)}")
+
+
+def require_mapping(value: Any, path: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ContentError(f"{path} must be a mapping")
+
+    return dict(value)
+
+
+def optional_mapping(value: Any, path: str) -> dict[str, Any]:
+    return {} if value is None else require_mapping(value, path)
+
+
+def require_string(value: Any, path: str) -> str:
+    if not isinstance(value, str):
+        raise ContentError(f"{path} must be a string")
+
+    return value.strip()
+
+
+def optional_string(value: Any, path: str, default: str = "") -> str:
+    return default if value is None else require_string(value, path)
+
+
+def optional_bool(value: Any, path: str, default: bool = False) -> bool:
+    if value is None:
+        return default
+
+    if not isinstance(value, bool):
+        raise ContentError(f"{path} must be a boolean")
+
+    return value
+
+
+def optional_int(value: Any, path: str, default: int) -> int:
+    if value is None:
+        return default
+
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ContentError(f"{path} must be an integer")
+
+    return value
+
+
+def mastodon_host(value: Any) -> str:
     text = trim_url(value)
 
     if not text:
@@ -62,7 +107,7 @@ def normalize_mastodon_host(value: Any) -> str:
     return (parsed.netloc or parsed.path).strip("/")
 
 
-def normalize_mastodon_instance_url(value: Any) -> str:
+def mastodon_instance_url(value: Any) -> str:
     text = trim_url(value)
 
     if not text:
@@ -73,17 +118,7 @@ def normalize_mastodon_instance_url(value: Any) -> str:
     return f"{parsed.scheme or 'https'}://{host.strip('/')}"
 
 
-def mastodon_instance_url_from_config(config: Mapping[str, Any]) -> str:
-    host = normalize_mastodon_host(config.get("host"))
-    instance_host = normalize_mastodon_host(config.get("instance_url"))
-
-    if host and instance_host in PLACEHOLDER_MASTODON_HOSTS:
-        return normalize_mastodon_instance_url(host)
-
-    return normalize_mastodon_instance_url(config.get("instance_url") or host)
-
-
-def parse_mastodon_status_url(value: Any) -> dict[str, str]:
+def parse_mastodon_status_url(value: str) -> dict[str, str]:
     text = trim_url(value)
 
     if not text:
@@ -94,14 +129,14 @@ def parse_mastodon_status_url(value: Any) -> dict[str, str]:
 
     if len(parts) >= 2 and parts[0].startswith("@"):
         return {
-            "host": normalize_mastodon_host(parsed.netloc),
+            "host": mastodon_host(parsed.netloc),
             "user": parts[0].lstrip("@").split("@")[0],
             "toot_id": parts[1],
         }
 
     if len(parts) >= 4 and parts[0] == "users" and parts[2] == "statuses":
         return {
-            "host": normalize_mastodon_host(parsed.netloc),
+            "host": mastodon_host(parsed.netloc),
             "user": parts[1],
             "toot_id": parts[3],
         }
@@ -109,94 +144,103 @@ def parse_mastodon_status_url(value: Any) -> dict[str, str]:
     return {}
 
 
-def normalize_mastodon_timeline(
+def timeline_browser_options(mastodon: Mapping[str, Any], timeline: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "mtContainerId": timeline["container_id"],
+        "instanceUrl": mastodon["instance_url"],
+        "timelineType": timeline["timeline_type"],
+        "userId": mastodon["user_id"],
+        "profileName": mastodon["profile_name"],
+        "defaultTheme": timeline["default_theme"],
+        "maxNbPostFetch": timeline["max_posts_fetch"],
+        "maxNbPostShow": timeline["max_posts_show"],
+        "hideReblog": timeline["hide_reblogs"],
+        "hideReplies": timeline["hide_replies"],
+    }
+
+
+def load_mastodon_timeline(
     mastodon: Mapping[str, Any],
     timeline_config: Any = None,
 ) -> dict[str, Any]:
-    raw = mapping_value(
-        timeline_config if timeline_config is not None else mastodon.get("timeline")
-    )
-    inline_options = {
-        key: copy_value(value)
-        for key, value in raw.items()
-        if key not in {"enabled", "options"}
-    }
-    explicit_options = mapping_value(raw.get("options"))
-    instance_url = normalize_mastodon_instance_url(
-        mastodon.get("instance_url") or mastodon.get("host")
-    )
-    defaults = deep_merge(
+    raw = optional_mapping(timeline_config if timeline_config is not None else mastodon.get("timeline"), "site.mastodon.timeline")
+    reject_unknown(raw, MASTODON_TIMELINE_KEYS, "site.mastodon.timeline")
+    timeline = deep_merge(
         DEFAULT_MASTODON_TIMELINE,
         {
-            "instanceUrl": instance_url,
-            "userId": str(mastodon.get("user_id") or ""),
-            "profileName": str(mastodon.get("profile_name") or ""),
+            "enabled": optional_bool(raw.get("enabled"), "site.mastodon.timeline.enabled", False),
+            "container_id": optional_string(raw.get("container_id"), "site.mastodon.timeline.container_id", DEFAULT_MASTODON_TIMELINE["container_id"]),
+            "timeline_type": optional_string(raw.get("timeline_type"), "site.mastodon.timeline.timeline_type", DEFAULT_MASTODON_TIMELINE["timeline_type"]),
+            "default_theme": optional_string(raw.get("default_theme"), "site.mastodon.timeline.default_theme", DEFAULT_MASTODON_TIMELINE["default_theme"]),
+            "max_posts_fetch": optional_int(raw.get("max_posts_fetch"), "site.mastodon.timeline.max_posts_fetch", DEFAULT_MASTODON_TIMELINE["max_posts_fetch"]),
+            "max_posts_show": optional_int(raw.get("max_posts_show"), "site.mastodon.timeline.max_posts_show", DEFAULT_MASTODON_TIMELINE["max_posts_show"]),
+            "hide_reblogs": optional_bool(raw.get("hide_reblogs"), "site.mastodon.timeline.hide_reblogs", DEFAULT_MASTODON_TIMELINE["hide_reblogs"]),
+            "hide_replies": optional_bool(raw.get("hide_replies"), "site.mastodon.timeline.hide_replies", DEFAULT_MASTODON_TIMELINE["hide_replies"]),
         },
     )
-    options = deep_merge(defaults, deep_merge(inline_options, explicit_options))
-    timeline_options = {
-        key: value
-        for key, value in options.items()
-        if key != "enabled"
-    }
+    enabled = optional_bool(raw.get("enabled"), "site.mastodon.timeline.enabled", bool(mastodon.get("enabled")))
 
     return {
-        "enabled": bool_value(raw.get("enabled"), bool_value(mastodon.get("enabled"))),
-        "container_id": str(
-            timeline_options.get("mtContainerId") or DEFAULT_MASTODON_TIMELINE["mtContainerId"]
-        ),
-        "options": timeline_options,
+        "enabled": enabled,
+        "container_id": timeline["container_id"],
+        "options": timeline_browser_options(mastodon, timeline),
     }
 
 
-def normalize_mastodon_comment_defaults(mastodon: Mapping[str, Any]) -> dict[str, Any]:
-    return deep_merge(
-        DEFAULT_MASTODON_COMMENTS,
-        {
-            "host": normalize_mastodon_host(
-                mastodon.get("host") or mastodon.get("instance_url")
-            ),
-            "user": str(mastodon.get("user") or ""),
-        },
+def load_mastodon_site_config(raw_config: Any) -> dict[str, Any]:
+    raw = optional_mapping(raw_config, "site.mastodon")
+    reject_unknown(raw, MASTODON_SITE_KEYS, "site.mastodon")
+    config = deep_merge(DEFAULT_MASTODON, {key: copy_value(value) for key, value in raw.items() if key != "timeline"})
+    host = mastodon_host(
+        optional_string(raw.get("host"), "site.mastodon.host", DEFAULT_MASTODON["host"])
+        or optional_string(raw.get("instance_url"), "site.mastodon.instance_url", DEFAULT_MASTODON["instance_url"])
     )
-
-
-def normalize_mastodon_site_config(raw_config: Any) -> dict[str, Any]:
-    raw = mapping_value(raw_config)
-    config = {
-        key: value
-        for key, value in deep_merge(DEFAULT_MASTODON, raw).items()
-        if key != "comments"
-    }
-    host = normalize_mastodon_host(config.get("host") or config.get("instance_url"))
-    instance_url = mastodon_instance_url_from_config(config)
+    instance_url = mastodon_instance_url(
+        optional_string(raw.get("instance_url"), "site.mastodon.instance_url", "")
+        or host
+    )
     mastodon = deep_merge(
         config,
         {
-            "enabled": bool_value(config.get("enabled")),
+            "enabled": optional_bool(raw.get("enabled"), "site.mastodon.enabled", False),
             "host": host,
             "instance_url": instance_url,
+            "user": optional_string(raw.get("user"), "site.mastodon.user", DEFAULT_MASTODON["user"]),
+            "user_id": optional_string(raw.get("user_id"), "site.mastodon.user_id", DEFAULT_MASTODON["user_id"]),
+            "profile_name": optional_string(raw.get("profile_name"), "site.mastodon.profile_name", DEFAULT_MASTODON["profile_name"]),
         },
     )
 
     return deep_merge(
         mastodon,
         {
-            "timeline": normalize_mastodon_timeline(
+            "timeline": load_mastodon_timeline(
                 mastodon,
-                mapping_value(raw.get("timeline")),
+                raw.get("timeline"),
             ),
         },
     )
 
 
-def normalize_mastodon_comments(
+def load_mastodon_comment_defaults(mastodon: Mapping[str, Any]) -> dict[str, Any]:
+    return deep_merge(
+        DEFAULT_MASTODON_COMMENTS,
+        {
+            "host": mastodon_host(mastodon.get("host") or mastodon.get("instance_url")),
+            "user": optional_string(mastodon.get("user"), "site.mastodon.user", ""),
+        },
+    )
+
+
+def load_mastodon_comments(
     raw_config: Any,
     site_mastodon: Mapping[str, Any],
 ) -> dict[str, Any]:
-    raw = {"status_url": raw_config} if isinstance(raw_config, str) else mapping_value(raw_config)
-    defaults = normalize_mastodon_comment_defaults(site_mastodon)
-    from_status_url = parse_mastodon_status_url(raw.get("status_url"))
+    raw = optional_mapping(raw_config, "mastodon_comments")
+    reject_unknown(raw, MASTODON_COMMENT_KEYS, "mastodon_comments")
+    defaults = load_mastodon_comment_defaults(site_mastodon)
+    status_url = optional_string(raw.get("status_url"), "mastodon_comments.status_url", "")
+    from_status_url = parse_mastodon_status_url(status_url)
     explicit = {
         key: copy_value(value)
         for key, value in raw.items()
@@ -206,14 +250,15 @@ def normalize_mastodon_comments(
     merged = deep_merge(
         merged,
         {
-            "host": normalize_mastodon_host(merged.get("host")),
-            "user": str(merged.get("user") or ""),
-            "toot_id": str(merged.get("toot_id") or merged.get("tootId") or ""),
+            "host": mastodon_host(merged.get("host")),
+            "user": optional_string(merged.get("user"), "mastodon_comments.user", ""),
+            "toot_id": optional_string(merged.get("toot_id"), "mastodon_comments.toot_id", ""),
+            "filter": optional_string(merged.get("filter"), "mastodon_comments.filter", ""),
+            "lang": optional_string(merged.get("lang"), "mastodon_comments.lang", ""),
         },
     )
     has_thread = all(merged.get(key) for key in ("host", "user", "toot_id"))
-    default_enabled = bool_value(defaults.get("enabled"))
-    explicit_enabled = bool_value(raw.get("enabled"), default=bool(raw) or default_enabled)
+    explicit_enabled = optional_bool(raw.get("enabled"), "mastodon_comments.enabled", bool(raw))
 
     return deep_merge(
         merged,

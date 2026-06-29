@@ -33,7 +33,7 @@ variable_groups:
   - title: Helpers
     variables:
       - name: image(name, variant)
-        meaning: Resolve logical images, direct static assets, external URLs, or placeholders.
+        meaning: Resolve logical images, direct static assets, or external URLs; missing files fail the build.
       - name: public_url(path)
         meaning: Prefix a route with site.url for feeds and canonical links.
 ---

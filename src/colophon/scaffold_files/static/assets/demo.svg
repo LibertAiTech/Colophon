@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-labelledby="title desc">
-  <title id="title">Static demo asset</title>
-  <desc id="desc">A simple SVG copied from static assets.</desc>
-  <rect width="640" height="360" fill="#f8fafc"/>
-  <rect x="32" y="32" width="576" height="296" rx="8" fill="#ffffff" stroke="#8aa0ad" stroke-width="4"/>
-  <path d="M96 244 224 116l96 96 80-64 144 112" fill="none" stroke="#1b6b86" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="464" cy="104" r="36" fill="#d88945"/>
-  <text x="72" y="304" font-family="system-ui, sans-serif" font-size="28" fill="#17324d">static/assets/demo.svg</text>
-</svg>

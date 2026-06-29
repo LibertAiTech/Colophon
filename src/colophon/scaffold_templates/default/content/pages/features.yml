@@ -27,7 +27,7 @@ doc_sections:
           under: /posts/
           sort: date desc
   - heading: Mastodon integration
-    text: site.mastodon and mastodon_comments can be normalized for templates without fetching remote data during build.
+    text: site.mastodon and mastodon_comments are loaded for templates without fetching remote data during build.
     code: |
       mastodon_comments:
         status_url: https://social.example/@example/123456

@@ -4,6 +4,18 @@ Colophon is a small static site generator for content-driven sites. It reads YAM
 
 ## Quick Start
 
+Install Colophon into a Python environment:
+
+```bash
+python -m pip install colophon
+```
+
+SFTP deploy support is optional:
+
+```bash
+python -m pip install 'colophon[sftp]'
+```
+
 Run the package from this repo during development:
 
 ```bash
@@ -23,6 +35,14 @@ colophon deploy --config colophon.yml --target production --dry-run
 colophon scaffold ./new-site
 colophon scaffold ./new-site --template default
 colophon scaffold ./new-site --template-dir ./my-scaffold-template
+```
+
+Builds can run from outside the project root with explicit paths:
+
+```bash
+colophon --project /path/to/site build --output _preview
+colophon build --config /path/to/site/colophon.yml --manifest /tmp/colophon-manifest.json
+colophon build --config colophon.yml --json --quiet --build-time 2026-01-02T03:04:05Z
 ```
 
 Build the sibling `libertaitech` site while working in this split workspace:
@@ -92,8 +112,10 @@ vendor:
       enabled: false
 ```
 
-Path values are resolved relative to the config file unless they are absolute. `paths.deploy` may also be named `deploy_config`.
+Path values are resolved relative to the config file unless they are absolute. `paths.deploy` is the only deploy-config path key.
 `vendor.mode` may be `auto`, `cdn`, or `local`; `auto` uses local files when present and CDN URLs otherwise.
+
+Colophon validates config strictly. Use mappings where mappings are documented, sequences where sequences are documented, and real booleans such as `true` or `false`; aliases and shorthand forms such as `paths.project`, `paths.deploy_config`, `vendor.require`, scalar lists, boolean strings, and asset boolean shorthand are rejected.
 
 Every command accepts `--config`. Build and serve also accept quick path overrides:
 
@@ -103,6 +125,56 @@ colophon serve --config colophon.yml --templates experimental-templates --port 8
 ```
 
 The loaded project is immutable during a build, so two independent site roots can build in the same Python process without monkeypatching global paths.
+
+## Python API
+
+Import Colophon from Python when integrating with scripts, CI, editors, or deployment tools:
+
+```python
+from colophon import BuildOptions, build_project, build_site, project_from_config
+
+result = build_project(
+    "/path/to/site",
+    output="_preview",
+    manifest_path="/tmp/colophon-manifest.json",
+    build_time="2026-01-02T03:04:05Z",
+)
+
+print(result.output_dir)
+print(result.counts["pages"])
+print(result.manifest.to_dict()["posts"])
+```
+
+`build_project()` accepts a project root plus the same path overrides as the CLI. `build_site()` accepts an explicit immutable `ProjectPaths` value:
+
+```python
+project = project_from_config("/path/to/site/colophon.yml", output="_preview")
+result = build_site(project, options=BuildOptions(build_time=0))
+```
+
+Both entry points return `BuildResult`. It includes the output directory, a `BuildManifest`, warnings, duration, counts, `to_dict()`, and `write_manifest(path)`. Library calls raise typed `ColophonError` subclasses instead of exiting the Python process. The CLI catches those errors and exits with shell status codes.
+
+Public library imports are intentionally curated through `colophon` / `colophon.core`. Internal modules may change between releases.
+
+## Build Results and Manifests
+
+Every successful build returns an in-memory manifest. Writing a manifest JSON file is opt-in with `--manifest`, `BuildOptions(manifest_path=...)`, or `BuildResult.write_manifest(path)`.
+
+The manifest contains:
+
+- schema version, Colophon version, project root, output directory, and build time
+- generated pages and posts with routes, templates, source chains, size, and SHA-256
+- archive pages, tag pages, and feeds
+- copied static assets, content image assets, colocated content assets, and generated image derivatives
+- skipped files and warnings, when relevant
+
+Use `--json` to print the full build result for automation:
+
+```bash
+colophon build --config colophon.yml --json --manifest build-manifest.json
+```
+
+For repeatable builds, pass `--build-time`, `BuildOptions(build_time=...)`, or set `SOURCE_DATE_EPOCH`. That single timestamp is used for feed rendering and build metadata.
 
 ## Content Files
 
@@ -308,11 +380,7 @@ Use the `image()` helper in templates:
 
 ```jinja
 {% set card = image("demo_card", "thumb") %}
-{% if card.exists %}
-  <img src="{{ card.url }}" alt="{{ card.alt }}" width="{{ card.width }}" height="{{ card.height }}">
-{% else %}
-  <p>Missing image: {{ card.label }}</p>
-{% endif %}
+<img src="{{ card.url }}" alt="{{ card.alt }}" width="{{ card.width }}" height="{{ card.height }}">
 ```
 
 The result includes `exists`, `url`, `alt`, `class`, `width`, `height`, `fit`, `position`, `ratio`, `label`, `size`, and `fallback`.
@@ -325,7 +393,7 @@ Direct image paths are also supported:
 {{ image("https://example.test/image.jpg").url }}
 ```
 
-Missing logical names return placeholders instead of failing the build. Generated derivatives are written under `_site/images/generated/`.
+Missing logical image names, missing configured image files, and missing direct `/images/` or `/assets/` files fail the build with an asset error. Generated derivatives are written under `_site/images/generated/`.
 
 ## Browser Vendor Assets
 
@@ -373,7 +441,7 @@ These pages use listed post summaries sorted by date descending. Tag routes are 
 
 ## Mastodon Timeline and Comments
 
-Mastodon support is static-site friendly. Colophon normalizes config and renders data needed by templates and browser-side components, but it does not fetch timelines during build.
+Mastodon support is static-site friendly. Colophon loads strict config and renders data needed by templates and browser-side components, but it does not fetch timelines during build.
 
 Site-level timeline config lives under `site.mastodon`:
 
@@ -387,7 +455,7 @@ site:
     profile_name: "@alice"
     timeline:
       enabled: true
-      maxNbPostShow: "3"
+      max_posts_show: 3
 ```
 
 Post comments can be enabled with explicit fields or a status URL:
@@ -429,7 +497,13 @@ Run without side effects:
 EXAMPLE_FTP_PASSWORD=dummy colophon deploy --config colophon.yml --target production --dry-run
 ```
 
-Supported upload transports are `ftp`, `ftps`, `sftp`, and `sshfs`. The default deploy step list is:
+Supported upload transports are `ftp`, `ftps`, `sftp`, and `sshfs`. SFTP requires the optional package extra:
+
+```bash
+python -m pip install 'colophon[sftp]'
+```
+
+The default deploy step list is:
 
 ```yaml
 steps:
@@ -444,6 +518,8 @@ steps:
 
 Remote purge has safety checks: the target must include a configured `remote_path`, and dry-run reports actions without uploading or deleting remote files.
 
+Deploy is a convenience layer for already-generated static output. It runs configured build steps through the same result-returning build pipeline as the CLI and Python API, and build failures stop deploy before upload.
+
 ## Serve and Watch
 
 `serve` builds from the configured output directory and starts a local HTTP server:
@@ -454,7 +530,11 @@ colophon serve --config colophon.yml --watch --port 8000
 
 With `--watch`, Colophon snapshots the configured content, templates, static directory, config file, and Python modules. A change triggers a rebuild and keeps serving the same output directory.
 
-`--test` starts the server briefly and stops automatically. It is intended for smoke tests.
+Builds are atomic by default. Watch mode renders into a temporary sibling output directory and only replaces the served output after a successful rebuild. If a rebuild fails, the previous successful site remains available and the watch process prints the typed failure category and message.
+
+Static assets, content images, generated image derivatives, archive pages, tag pages, and feeds are refreshed on each successful rebuild.
+
+`--test` on the `serve` command starts the server briefly and stops automatically. It is intended for smoke tests.
 
 ## Scaffold
 
@@ -472,6 +552,19 @@ The generated footer includes a placeholder Colophon project link at `https://gi
 
 Use `--force` only when the destination is empty or when you intentionally want scaffold files overwritten.
 
+## Logging and Errors
+
+Normal CLI builds print a short success summary. `--quiet` suppresses normal output for scripts and CI. `--verbose` prints build counts, and `--json` prints the machine-readable `BuildResult`.
+
+User-facing failures are reported without tracebacks by default:
+
+```text
+configuration error: missing project config: /path/to/colophon.yml
+template error: /about/: failed to render template 'simple.html': ...
+```
+
+Use `--debug` when you need the Python traceback. Programmatic callers can catch `ColophonError` or specific subclasses such as `ProjectConfigError`, `ExpressionResolutionError`, `TemplateBuildError`, `AssetError`, `DeployConfigError`, and `DeployError`.
+
 ## Troubleshooting
 
 - `missing project config`: pass `--config` or run from a directory containing `colophon.yml`.
@@ -479,7 +572,7 @@ Use `--force` only when the destination is empty or when you intentionally want 
 - `duplicate YAML function name`: rename one function or remove one module.
 - `missing environment variable`: export the required variable or use `--dry-run` with dummy values for deploy tests.
 - Template errors around undefined values: check the content file and template variable names.
-- Missing images render as placeholders; inspect `content/images.yml` and `content/images/`.
+- Missing images fail the build; inspect `content/images.yml`, direct image references, and `content/images/`.
 - Deploy upload errors usually come from missing host/user/path/password values or network credentials.
 
 ## Migration Notes
@@ -492,7 +585,21 @@ Local development command from `libertaitech/`:
 PYTHONPATH=../colophon_repo/src ../colophon_repo/.venv/bin/python -m colophon build --config colophon.yml
 ```
 
-Backward compatibility with the old embedded generator layout is intentionally removed.
+Backward compatibility with the old embedded generator layout is intentionally removed. Migrate by:
+
+- running explicit commands such as `colophon build`, `colophon serve`, `colophon deploy`, `colophon scaffold`, or `colophon vendor download` instead of root-level legacy flags
+- using `build_project()` or passing an explicit `ProjectPaths` to `build_site(project, ...)`
+- using `paths.deploy`, `vendor.required`, mapping-based vendor asset config, and mapping-based `mastodon_comments`
+- replacing Mastodon timeline camelCase config keys with snake_case keys such as `container_id`, `max_posts_show`, and `hide_reblogs`
+- making every logical image in `content/images.yml` point to an existing file under `content/images/`
+
+## Versioning and Compatibility
+
+Colophon uses semantic versioning. Patch releases preserve documented behavior except for bug fixes. Minor releases may add compatible features. Major releases may remove deprecated behavior or make larger compatibility changes.
+
+The CLI commands and the public Python facade exported from `colophon` / `colophon.core` are the documented compatibility surface. Internal modules remain available for Colophon development and tests, but they are not promised as stable integration APIs.
+
+When practical, behavior that is documented and working should receive a deprecation path before removal. Clearly broken, unsafe, or previously undocumented behavior may be fixed directly.
 
 # Authorship
 

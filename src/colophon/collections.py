@@ -11,9 +11,9 @@ from collections.abc import Mapping
 from typing import Any
 
 from .expressions import resolve_page_context_expressions
-from .mastodon import normalize_mastodon_comments
+from .mastodon import load_mastodon_comments
 from .models import ExpressionFunction, PageContext
-from .utils import copy_value, deep_merge, mapping_value, normalize_route, route_parts
+from .utils import copy_value, deep_merge, optional_mapping, normalize_route, route_parts
 
 
 DEFAULT_COLLECTIONS = {
@@ -190,13 +190,13 @@ def enrich_post_context(
         return context
 
     sidebar = context.data.get("sidebar") or copy_value(post_sidebar)
-    site_mastodon = mapping_value(context.data.get("site", {}).get("mastodon"))
+    site_mastodon = optional_mapping(optional_mapping(context.data.get("site"), "site").get("mastodon"), "site.mastodon")
     data = deep_merge(
         context.data,
         {
             "sidebar": sidebar,
             "related": related_posts_for(context, post_summaries),
-            "mastodon_comments": normalize_mastodon_comments(
+            "mastodon_comments": load_mastodon_comments(
                 context.data.get("mastodon_comments"),
                 site_mastodon,
             ),

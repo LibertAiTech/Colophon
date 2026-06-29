@@ -21,30 +21,29 @@ package into the environment or set `PYTHONPATH=src`.
 
 `colophon.core` is only a facade. It should stay small and export
 stable entry points such as `build_site`, `deploy_site`, `scaffold_site`,
-`serve_site`, `project_from_config`, `default_config_project`, and `main`.
+`serve_site`, `project_from_config`, `build_project`, and `main`.
 Internal behavior belongs in the subsystem modules below.
 
 | Component | Responsibility |
 | --- | --- |
 | `cli.py` | Argument parsing and command dispatch. It wires project loading to build, serve, deploy, and scaffold commands. |
-| `project.py` | Project path resolution from `colophon.yml`, conventional defaults, and legacy default-project helpers. |
+| `project.py` | Strict project path resolution from `colophon.yml` and explicit CLI/API overrides. |
 | `models.py` | Frozen dataclasses and callable type aliases shared across the pipeline. |
 | `errors.py` | Domain-specific exception classes. |
-| `utils.py` | Low-level pure helpers for copying, merging, YAML loading, booleans, dates, routes, mappings, and public URLs. |
+| `utils.py` | Low-level pure helpers for copying, merging, YAML loading, strict schema checks, dates, routes, and public URLs. |
 | `expressions.py` | YAML expression resolution, `env::` references, `python::` hook calls, expression registries, and Jinja-in-YAML rendering. |
-| `mastodon.py` | Site-level Mastodon normalization, timeline/comment defaults, host parsing, and status URL parsing. |
+| `mastodon.py` | Strict site-level Mastodon config loading, timeline/comment defaults, host parsing, and status URL parsing. |
 | `markdown.py` | Markdown rendering, table-of-contents generation, text statistics, and reading-time estimation. |
 | `content.py` | Content discovery, route discovery, source chains, layer loading, page context construction, site config loading, and post sidebar loading. |
 | `collections.py` | Page summaries, collection selection/sorting, page graph attachment, post detection, related posts, and post enrichment. |
-| `images.py` | Image config loading, content image copying, derivative generation, smart crop positioning, placeholders, and the Jinja `image()` resolver. |
+| `images.py` | Image config loading, content image copying, derivative generation, smart crop positioning, and the Jinja `image()` resolver. |
 | `vendor.py` | Browser vendor asset config, dependency expansion, CDN/local URL resolution, local preflight checks, and downloads. |
 | `render.py` | Jinja environment creation, filters/globals, template selection, output path resolution, page rendering, and archive/tag/feed rendering. |
 | `build.py` | Build orchestration: load config, discover content, build contexts, create render jobs, copy assets, render pages, and render auxiliary pages. |
 | `serve.py` | Input snapshotting, watch/rebuild loop, and local HTTP serving. |
 | `scaffold.py` | Copying package-data scaffold files into a new site. |
-| `scaffold_files/` | The scaffold site source tree. Treat these as real template/content/static files, not Python literals. |
-| `scaffold_templates/` | Named scaffold source trees. `default/` is the primary packaged scaffold; `scaffold_files/` remains a compatibility source. |
-| `deploy/config.py` | Deploy config normalization, validation, defaults, target selection data, and secret redaction. |
+| `scaffold_templates/` | Named scaffold source trees. `default/` is the only packaged scaffold source. |
+| `deploy/config.py` | Strict deploy config loading, validation, defaults, target selection data, and secret redaction. |
 | `deploy/mastodon.py` | Deploy post selection, Mastodon post text rendering, status posting, and source metadata write-back for comments. |
 | `deploy/transports.py` | FTP, FTPS, SFTP, and SSHFS upload side effects plus dry-run upload planning. |
 | `deploy/pipeline.py` | Deploy step orchestration and the public `deploy_site()` implementation. |
@@ -131,7 +130,7 @@ Put new code where the question it answers naturally belongs:
 | What sequence builds the site? | `build.py` |
 | What sequence deploys the site? | `deploy/pipeline.py` |
 | How does a remote upload happen? | `deploy/transports.py` |
-| What should a generated starter site contain? | `scaffold_files/` |
+| What should a generated starter site contain? | `scaffold_templates/default/` |
 
 If a helper is useful across many modules, first check `utils.py`. Add to it
 only when the helper is pure, small, and does not pull in a subsystem dependency.
@@ -161,13 +160,13 @@ script in `pyproject.toml` should continue pointing at `colophon.cli:main`.
 
 ## Scaffold Files
 
-Scaffold content lives under `src/colophon/scaffold_files/` and is copied by
-`scaffold.py` with `importlib.resources`. Update scaffold examples by editing
-those files directly.
+Scaffold content lives under `src/colophon/scaffold_templates/default/` and is
+copied by `scaffold.py` with `importlib.resources`. Update scaffold examples by
+editing those files directly.
 
 Do not reintroduce a large Python dictionary of scaffold file literals. Also
-avoid adding generated caches or build artifacts under `scaffold_files/`; they
-may be packaged as user-visible starter files.
+avoid adding generated caches or build artifacts under `scaffold_templates/`;
+they may be packaged as user-visible starter files.
 
 ## Testing Expectations
 
@@ -199,5 +198,5 @@ Before opening a change, verify:
 - Imports follow the dependency direction above.
 - Side effects stay in build, scaffold, serve, deploy, image file generation, or transport boundaries.
 - New helpers do not mutate inputs.
-- Scaffold changes are real files under `scaffold_files/`.
+- Scaffold changes are real files under `scaffold_templates/default/`.
 - Tests cover the behavior through public subsystem APIs or the CLI.
