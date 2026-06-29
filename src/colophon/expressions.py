@@ -21,7 +21,7 @@ from slugify import slugify
 
 from .errors import ExpressionResolutionError, ProjectConfigError
 from .models import ExpressionFunction, PageContext, ProjectPaths
-from .utils import copy_value, deep_merge, require_mapping
+from .utils import copy_value, deep_merge, expect
 
 # TODO: Make expression prefixes configurable, and allow for custom prefixes to be registered with the expression resolver.
 
@@ -341,7 +341,7 @@ def resolve_site_expressions(
     registry: Mapping[str, ExpressionFunction] | None = None,
 ) -> dict[str, Any]:
     resolved = resolve_yaml_expressions({"site": site}, registry=registry, path="")
-    return normalize_resolved_site_fields(require_mapping(resolved.get("site"), "site"))
+    return normalize_resolved_site_fields(expect(resolved.get("site"), "site", "mapping"))
 
 
 def resolve_page_context_expressions(

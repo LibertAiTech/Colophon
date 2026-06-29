@@ -18,6 +18,86 @@ import yaml
 from .errors import ProjectConfigError
 
 
+MISSING = object()
+
+
+SCHEMA_CHECKS = {
+    "mapping": lambda item: isinstance(item, Mapping),
+    "sequence": lambda item: isinstance(item, list | tuple),
+    "string": lambda item: isinstance(item, str),
+    "boolean": lambda item: isinstance(item, bool),
+    "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
+}
+
+
+SCHEMA_MESSAGES = {
+    "mapping": "must be a mapping",
+    "sequence": "must be a sequence",
+    "string": "must be a string",
+    "boolean": "must be a boolean",
+    "integer": "must be an integer",
+}
+
+
+def expect(
+    value: Any,
+    path: str,
+    kind: str,
+    *,
+    default: Any = MISSING,
+    error: type[Exception] = ProjectConfigError,
+    nonempty: bool = False,
+) -> Any:
+    if value is None:
+        if default is MISSING:
+            raise error(f"{path} {SCHEMA_MESSAGES[kind]}")
+
+        return copy_value(default)
+
+    if not SCHEMA_CHECKS[kind](value):
+        raise error(f"{path} {SCHEMA_MESSAGES[kind]}")
+
+    if kind == "mapping":
+        return dict(value)
+
+    if kind == "sequence":
+        return tuple(value)
+
+    if kind == "string":
+        text = value.strip()
+
+        if nonempty and not text:
+            raise error(f"{path} must not be empty")
+
+        return text
+
+    return value
+
+
+def field(kind: str, default: Any = MISSING, *, nonempty: bool = False) -> tuple[str, Any, bool]:
+    return kind, default, nonempty
+
+
+def expect_fields(
+    raw: Mapping[str, Any],
+    path: str,
+    fields: Mapping[str, tuple[str, Any, bool]],
+    *,
+    error: type[Exception] = ProjectConfigError,
+) -> dict[str, Any]:
+    return {
+        name: expect(
+            raw.get(name),
+            f"{path}.{name}",
+            kind,
+            default=default,
+            error=error,
+            nonempty=nonempty,
+        )
+        for name, (kind, default, nonempty) in fields.items()
+    }
+
+
 def copy_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {key: copy_value(item) for key, item in value.items()}
@@ -67,59 +147,9 @@ def load_wrapped_yaml(paths: list[Path], *, unwrap: str | None = None) -> dict[s
     if unwrap and unwrap in data:
         nested = data[unwrap]
 
-        if not isinstance(nested, Mapping):
-            raise ProjectConfigError(f"{unwrap!r} must contain a YAML mapping/object")
-
-        return dict(nested)
+        return expect(nested, f"{unwrap!r}", "mapping")
 
     return data
-
-
-def require_mapping(value: Any, path: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ProjectConfigError(f"{path} must be a mapping")
-
-    return dict(value)
-
-
-def optional_mapping(value: Any, path: str) -> dict[str, Any]:
-    return {} if value is None else require_mapping(value, path)
-
-
-def require_sequence(value: Any, path: str) -> tuple[Any, ...]:
-    if not isinstance(value, list | tuple):
-        raise ProjectConfigError(f"{path} must be a sequence")
-
-    return tuple(value)
-
-
-def optional_sequence(value: Any, path: str) -> tuple[Any, ...]:
-    return () if value is None else require_sequence(value, path)
-
-
-def require_string(value: Any, path: str) -> str:
-    if not isinstance(value, str):
-        raise ProjectConfigError(f"{path} must be a string")
-
-    if not value.strip():
-        raise ProjectConfigError(f"{path} must not be empty")
-
-    return value
-
-
-def optional_string(value: Any, path: str, default: str = "") -> str:
-    return default if value is None else require_string(value, path)
-
-
-def require_bool(value: Any, path: str) -> bool:
-    if not isinstance(value, bool):
-        raise ProjectConfigError(f"{path} must be a boolean")
-
-    return value
-
-
-def optional_bool(value: Any, path: str, default: bool = False) -> bool:
-    return default if value is None else require_bool(value, path)
 
 
 def parse_date(value: Any) -> dt.date | None:

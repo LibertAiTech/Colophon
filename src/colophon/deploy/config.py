@@ -7,13 +7,14 @@ step validation, and secret redaction before pipeline execution.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from colophon.errors import DeployConfigError
 from colophon.expressions import resolve_yaml_expression_values
 from colophon.models import ProjectPaths
-from colophon.utils import copy_value, deep_merge, read_yaml
+from colophon.utils import copy_value, deep_merge, expect, expect_fields, field, read_yaml
 
 
 DEFAULT_DEPLOY_STEPS = [
@@ -64,65 +65,26 @@ DEFAULT_TRANSPORT_PORTS = {
 }
 
 
-def require_deploy_mapping(value: Any, path: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        raise DeployConfigError(f"{path} must be a mapping")
-
-    return dict(value)
+deploy_value = partial(expect, error=DeployConfigError)
+deploy_fields = partial(expect_fields, error=DeployConfigError)
 
 
-def optional_deploy_mapping(value: Any, path: str) -> dict[str, Any]:
-    return {} if value is None else require_deploy_mapping(value, path)
-
-
-def require_deploy_sequence(value: Any, path: str) -> tuple[Any, ...]:
-    if not isinstance(value, list | tuple):
-        raise DeployConfigError(f"{path} must be a sequence")
-
-    return tuple(value)
-
-
-def optional_deploy_sequence(value: Any, path: str) -> tuple[Any, ...]:
-    return () if value is None else require_deploy_sequence(value, path)
-
-
-def require_deploy_string(value: Any, path: str) -> str:
-    if not isinstance(value, str):
-        raise DeployConfigError(f"{path} must be a string")
-
-    if not value.strip():
-        raise DeployConfigError(f"{path} must not be empty")
-
-    return value
-
-
-def optional_deploy_string(value: Any, path: str, default: str = "") -> str:
-    return default if value is None else require_deploy_string(value, path)
-
-
-def optional_deploy_bool(value: Any, path: str, default: bool) -> bool:
-    if value is None:
-        return default
-
-    if not isinstance(value, bool):
-        raise DeployConfigError(f"{path} must be a boolean")
-
-    return value
-
-
-def optional_deploy_int(value: Any, path: str, default: int) -> int:
-    if value is None:
-        return default
-
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise DeployConfigError(f"{path} must be an integer")
-
-    return value
+DEPLOY_TARGET_FIELDS = {
+    "transport": field("string", DEFAULT_DEPLOY_TARGET["transport"], nonempty=True),
+    "host": field("string", nonempty=True),
+    "username": field("string", nonempty=True),
+    "password": field("string", ""),
+    "remote_path": field("string", nonempty=True),
+    "purge": field("boolean", True),
+}
 
 
 def load_deploy_steps(value: Any) -> list[str]:
-    raw_steps = DEFAULT_DEPLOY_STEPS if value is None else require_deploy_sequence(value, "deploy.steps")
-    steps = [require_deploy_string(step, "deploy.steps[]").strip() for step in raw_steps]
+    raw_steps = deploy_value(value, "deploy.steps", "sequence", default=DEFAULT_DEPLOY_STEPS)
+    steps = [
+        deploy_value(step, "deploy.steps[]", "string", nonempty=True)
+        for step in raw_steps
+    ]
     unknown = [step for step in steps if step not in DEFAULT_DEPLOY_STEPS]
 
     if unknown:
@@ -132,13 +94,10 @@ def load_deploy_steps(value: Any) -> list[str]:
 
 
 def load_deploy_target(raw_target: Any, path: str) -> dict[str, Any]:
-    raw = require_deploy_mapping(raw_target, path)
+    raw = deploy_value(raw_target, path, "mapping")
     target = deep_merge(DEFAULT_DEPLOY_TARGET, raw)
-    transport = optional_deploy_string(
-        raw.get("transport"),
-        f"{path}.transport",
-        DEFAULT_DEPLOY_TARGET["transport"],
-    ).lower()
+    fields = deploy_fields(raw, path, DEPLOY_TARGET_FIELDS)
+    transport = fields["transport"].lower()
 
     if transport not in DEFAULT_TRANSPORT_PORTS:
         raise DeployConfigError(f"unknown deploy transport {transport!r}")
@@ -146,47 +105,50 @@ def load_deploy_target(raw_target: Any, path: str) -> dict[str, Any]:
     normalized = deep_merge(
         target,
         {
+            **fields,
             "transport": transport,
-            "port": optional_deploy_int(raw.get("port"), f"{path}.port", DEFAULT_TRANSPORT_PORTS[transport]),
-            "host": require_deploy_string(raw.get("host"), f"{path}.host").strip(),
-            "username": require_deploy_string(raw.get("username"), f"{path}.username").strip(),
-            "password": optional_deploy_string(raw.get("password"), f"{path}.password", ""),
-            "remote_path": require_deploy_string(raw.get("remote_path"), f"{path}.remote_path").strip(),
-            "purge": optional_deploy_bool(raw.get("purge"), f"{path}.purge", True),
+            "port": deploy_value(
+                raw.get("port"),
+                f"{path}.port",
+                "integer",
+                default=DEFAULT_TRANSPORT_PORTS[transport],
+            ),
         },
     )
-
-    if normalized["password"] and not isinstance(normalized["password"], str):
-        raise DeployConfigError(f"{path}.password must be a string")
 
     return normalized
 
 
 def validate_deploy_config(raw_config: Any) -> dict[str, Any]:
-    raw = require_deploy_mapping(raw_config, "deploy config")
+    raw = deploy_value(raw_config, "deploy config", "mapping")
     if "deploy" not in raw:
         raise DeployConfigError("deploy config must contain a top-level deploy mapping")
 
-    deploy = require_deploy_mapping(raw["deploy"], "deploy")
+    deploy = deploy_value(raw["deploy"], "deploy", "mapping")
     resolved = resolve_yaml_expression_values(deploy, path="deploy")
-    resolved = require_deploy_mapping(resolved, "deploy")
+    resolved = deploy_value(resolved, "deploy", "mapping")
     base = deep_merge(
         DEFAULT_DEPLOY,
         {key: copy_value(value) for key, value in resolved.items() if key != "targets"},
     )
-    targets = require_deploy_mapping(resolved.get("targets"), "deploy.targets")
+    targets = deploy_value(resolved.get("targets"), "deploy.targets", "mapping")
 
     if not targets:
         raise DeployConfigError("deploy.targets must contain at least one target")
 
     normalized_targets = {
-        require_deploy_string(name, "deploy.targets key"): load_deploy_target(target, f"deploy.targets.{name}")
+        deploy_value(name, "deploy.targets key", "string", nonempty=True): load_deploy_target(
+            target,
+            f"deploy.targets.{name}",
+        )
         for name, target in targets.items()
     }
-    default_target = optional_deploy_string(
+    default_target = deploy_value(
         base.get("default_target"),
         "deploy.default_target",
-        DEFAULT_DEPLOY["default_target"],
+        "string",
+        default=DEFAULT_DEPLOY["default_target"],
+        nonempty=True,
     )
 
     if default_target not in normalized_targets:
@@ -197,10 +159,13 @@ def validate_deploy_config(raw_config: Any) -> dict[str, Any]:
         {
             "default_target": default_target,
             "steps": load_deploy_steps(base.get("steps")),
-            "post": deep_merge(DEFAULT_DEPLOY_POST, optional_deploy_mapping(base.get("post"), "deploy.post")),
+            "post": deep_merge(
+                DEFAULT_DEPLOY_POST,
+                deploy_value(base.get("post"), "deploy.post", "mapping", default={}),
+            ),
             "mastodon": deep_merge(
                 DEFAULT_DEPLOY_MASTODON,
-                optional_deploy_mapping(base.get("mastodon"), "deploy.mastodon"),
+                deploy_value(base.get("mastodon"), "deploy.mastodon", "mapping", default={}),
             ),
             "targets": normalized_targets,
         },

@@ -17,7 +17,7 @@ from urllib.request import urlopen
 
 from .errors import ProjectConfigError
 from .models import PageContext, ProjectPaths, SiteConfig, VendorAssetOverride, VendorConfig
-from .utils import optional_bool, optional_mapping, optional_sequence, require_bool, require_mapping, require_string
+from .utils import expect, expect_fields, field
 
 
 VENDOR_MODES = {"auto", "cdn", "local"}
@@ -97,15 +97,28 @@ BUILTIN_VENDOR_ASSETS = {
 }
 
 
+VENDOR_ASSET_OVERRIDE_FIELDS = {
+    "enabled": field("boolean", None),
+    "local_path": field("string", ""),
+    "cdn_base": field("string", ""),
+    "required_files": field("sequence", ()),
+    "files": field("mapping", {}),
+    "cdn_files": field("mapping", {}),
+    "dependencies": field("sequence", ()),
+    "archive_url": field("string", ""),
+    "archive_prefix": field("string", ""),
+}
+
+
 ByteFetcher = Callable[[str], bytes]
 
 
 def validate_name(value: Any, path: str) -> str:
-    return require_string(value, path).strip()
+    return expect(value, path, "string", nonempty=True)
 
 
 def validate_names(value: Any, path: str) -> tuple[str, ...]:
-    values = optional_sequence(value, path)
+    values = expect(value, path, "sequence", default=())
     return tuple(
         dict.fromkeys(
             name
@@ -125,12 +138,12 @@ def relative_posix_path(value: Any, *, label: str) -> str:
 
 
 def validate_file_urls(value: Any, path: str) -> tuple[tuple[str, str], ...]:
-    raw = optional_mapping(value, path)
+    raw = expect(value, path, "mapping", default={})
     return tuple(
         sorted(
             (
                 relative_posix_path(relative_path, label="vendor asset file"),
-                require_string(url, f"{path}.{relative_path}"),
+                expect(url, f"{path}.{relative_path}", "string", nonempty=True),
             )
             for relative_path, url in raw.items()
         )
@@ -138,50 +151,56 @@ def validate_file_urls(value: Any, path: str) -> tuple[tuple[str, str], ...]:
 
 
 def load_vendor_asset_override(value: Any, path: str) -> VendorAssetOverride:
-    raw = require_mapping(value, path)
-    raw_files = raw.get("files")
+    raw = expect(value, path, "mapping")
+    fields = expect_fields(raw, path, VENDOR_ASSET_OVERRIDE_FIELDS)
     cdn_files = (
-        validate_file_urls(raw.get("cdn_files"), f"{path}.cdn_files")
-        + validate_file_urls(raw_files, f"{path}.files")
+        validate_file_urls(fields["cdn_files"], f"{path}.cdn_files")
+        + validate_file_urls(fields["files"], f"{path}.files")
     )
-    required_files = validate_names(raw.get("required_files"), f"{path}.required_files")
+    required_files = validate_names(fields["required_files"], f"{path}.required_files")
 
     return VendorAssetOverride(
-        enabled=(None if raw.get("enabled") is None else require_bool(raw["enabled"], f"{path}.enabled")),
+        enabled=fields["enabled"],
         local_path=(
-            relative_posix_path(raw["local_path"], label="vendor asset local_path")
-            if raw.get("local_path")
+            relative_posix_path(fields["local_path"], label="vendor asset local_path")
+            if fields["local_path"]
             else None
         ),
-        cdn_base=require_string(raw["cdn_base"], f"{path}.cdn_base").rstrip("/") if raw.get("cdn_base") else None,
+        cdn_base=fields["cdn_base"].rstrip("/") if fields["cdn_base"] else None,
         required_files=tuple(
             relative_posix_path(path, label="vendor asset required file")
             for path in required_files
         ),
         cdn_files=tuple(dict(cdn_files).items()),
-        dependencies=validate_names(raw.get("dependencies"), f"{path}.dependencies"),
-        archive_url=require_string(raw["archive_url"], f"{path}.archive_url").strip() if raw.get("archive_url") else None,
+        dependencies=validate_names(fields["dependencies"], f"{path}.dependencies"),
+        archive_url=fields["archive_url"] or None,
         archive_prefix=(
-            require_string(raw["archive_prefix"], f"{path}.archive_prefix").strip().lstrip("/")
-            if raw.get("archive_prefix")
+            fields["archive_prefix"].lstrip("/")
+            if fields["archive_prefix"]
             else None
         ),
     )
 
 
 def load_vendor_config(raw_config: Any) -> VendorConfig:
-    raw = optional_mapping(raw_config, "vendor")
+    raw = expect(raw_config, "vendor", "mapping", default={})
     if "require" in raw:
         raise ProjectConfigError("vendor.require is not supported; use vendor.required")
 
-    mode = require_string(raw.get("mode", "auto"), "vendor.mode").strip().lower()
+    mode = expect(
+        raw.get("mode"),
+        "vendor.mode",
+        "string",
+        default="auto",
+        nonempty=True,
+    ).lower()
 
     if mode not in VENDOR_MODES:
         raise ProjectConfigError(
             f"vendor.mode must be one of {', '.join(sorted(VENDOR_MODES))}: {mode}"
         )
 
-    raw_assets = optional_mapping(raw.get("assets"), "vendor.assets")
+    raw_assets = expect(raw.get("assets"), "vendor.assets", "mapping", default={})
     assets = tuple(
         sorted(
             (
@@ -194,7 +213,10 @@ def load_vendor_config(raw_config: Any) -> VendorConfig:
 
     return VendorConfig(
         mode=mode,
-        local_dir=relative_posix_path(raw.get("local_dir") or "vendor", label="vendor.local_dir"),
+        local_dir=relative_posix_path(
+            raw.get("local_dir") or "vendor",
+            label="vendor.local_dir",
+        ),
         required=validate_names(raw.get("required"), "vendor.required"),
         assets=assets,
     )
@@ -268,10 +290,11 @@ def expand_vendor_assets(names: Iterable[str], config: VendorConfig) -> tuple[st
 
 
 def page_uses_mastodon_timeline_data(context: Mapping[str, Any]) -> bool:
-    mastodon = require_mapping(require_mapping(context["site"], "site").get("mastodon", {}), "site.mastodon")
-    timeline = require_mapping(mastodon.get("timeline", {}), "site.mastodon.timeline")
-    sidebar = require_mapping(context.get("sidebar", {}), "sidebar")
-    cards = optional_sequence(sidebar.get("cards"), "sidebar.cards")
+    site = expect(context["site"], "site", "mapping")
+    mastodon = expect(site.get("mastodon"), "site.mastodon", "mapping", default={})
+    timeline = expect(mastodon.get("timeline"), "site.mastodon.timeline", "mapping", default={})
+    sidebar = expect(context.get("sidebar"), "sidebar", "mapping", default={})
+    cards = expect(sidebar.get("cards"), "sidebar.cards", "sequence", default=())
 
     return bool(timeline.get("enabled")) and any(
         isinstance(card, Mapping) and card.get("type") == "mastodon_timeline"
@@ -288,7 +311,12 @@ def content_required_vendor_assets(
         for context in contexts
         for name in (
             ("mastodon-comments",)
-            if require_mapping(context.data.get("mastodon_comments", {}), "mastodon_comments").get("enabled")
+            if expect(
+                context.data.get("mastodon_comments"),
+                "mastodon_comments",
+                "mapping",
+                default={},
+            ).get("enabled")
             else ()
         )
         + (
@@ -297,9 +325,15 @@ def content_required_vendor_assets(
             else ()
         )
     )
-    site_vendor = optional_mapping(site_config.data["site"].get("vendor"), "site.vendor")
+    site_vendor = expect(
+        site_config.data["site"].get("vendor"),
+        "site.vendor",
+        "mapping",
+        default={},
+    )
+    site_required = validate_names(site_vendor.get("required"), "site.vendor.required")
 
-    return tuple(dict.fromkeys((*validate_names(site_vendor.get("required"), "site.vendor.required"), *context_names)))
+    return tuple(dict.fromkeys((*site_required, *context_names)))
 
 
 def required_vendor_assets(

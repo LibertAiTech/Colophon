@@ -23,7 +23,7 @@ from colophon.errors import DeployConfigError, DeployError
 from colophon.expressions import make_expression_environment
 from colophon.mastodon import mastodon_instance_url
 from colophon.models import DeployPostSelection, PageContext, SourceFile
-from colophon.utils import deep_merge, optional_mapping, public_url, read_yaml
+from colophon.utils import deep_merge, expect, public_url, read_yaml
 
 
 def deploy_post_date(value: Any) -> dt.date:
@@ -137,7 +137,7 @@ def load_deploy_mastodon(
     mastodon: Mapping[str, Any],
     site: Mapping[str, Any],
 ) -> dict[str, Any]:
-    site_mastodon = optional_mapping(site.get("mastodon"), "site.mastodon")
+    site_mastodon = expect(site.get("mastodon"), "site.mastodon", "mapping", default={})
     instance_url = mastodon_instance_url(
         mastodon.get("instance_url")
         or mastodon.get("host")
@@ -206,10 +206,8 @@ def mastodon_comments_status_url(raw_comments: Any) -> str:
     if raw_comments is None:
         return ""
 
-    if isinstance(raw_comments, Mapping):
-        return str(raw_comments.get("status_url") or "").strip()
-
-    raise DeployConfigError("mastodon_comments must be a mapping")
+    comments = expect(raw_comments, "mastodon_comments", "mapping", error=DeployConfigError)
+    return str(comments.get("status_url") or "").strip()
 
 
 def source_mastodon_status_url(source_file: SourceFile) -> str:
@@ -217,7 +215,7 @@ def source_mastodon_status_url(source_file: SourceFile) -> str:
 
 
 def comments_with_status_url(raw_comments: Any, status_url: str) -> dict[str, Any]:
-    comments = optional_mapping(raw_comments, "mastodon_comments")
+    comments = expect(raw_comments, "mastodon_comments", "mapping", default={}, error=DeployConfigError)
     defaults = {} if "enabled" in comments else {"enabled": True}
     return deep_merge(deep_merge(defaults, comments), {"status_url": status_url})
 
