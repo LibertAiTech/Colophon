@@ -13,7 +13,7 @@ from typing import Any
 from .expressions import resolve_page_context_expressions
 from .mastodon import load_mastodon_comments
 from .models import ExpressionFunction, PageContext
-from .utils import copy_value, deep_merge, expect, normalize_route, route_parts
+from .utils import copy_value, deep_merge, normalize_route, route_parts
 
 
 DEFAULT_COLLECTIONS = {
@@ -190,8 +190,7 @@ def enrich_post_context(
         return context
 
     sidebar = context.data.get("sidebar") or copy_value(post_sidebar)
-    site = expect(context.data.get("site"), "site", "mapping", default={})
-    site_mastodon = expect(site.get("mastodon"), "site.mastodon", "mapping", default={})
+    site_mastodon = (context.data.get("site") or {}).get("mastodon") or {}
     data = deep_merge(
         context.data,
         {

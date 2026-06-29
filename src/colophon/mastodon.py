@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from functools import partial
 from typing import Any
 from urllib.parse import urlparse
 
 from .errors import ContentError
-from .utils import copy_value, deep_merge, expect, expect_fields, field, trim_url
+from .utils import copy_value, deep_merge, mapping, trim_url
 
 
 DEFAULT_MASTODON_TIMELINE = {
@@ -47,38 +46,6 @@ DEFAULT_MASTODON = {
 MASTODON_SITE_KEYS = frozenset(DEFAULT_MASTODON)
 MASTODON_TIMELINE_KEYS = frozenset(DEFAULT_MASTODON_TIMELINE)
 MASTODON_COMMENT_KEYS = frozenset((*DEFAULT_MASTODON_COMMENTS, "status_url"))
-content_value = partial(expect, error=ContentError)
-content_fields = partial(expect_fields, error=ContentError)
-
-
-MASTODON_SITE_FIELDS = {
-    "enabled": field("boolean", False),
-    "host": field("string", DEFAULT_MASTODON["host"]),
-    "instance_url": field("string", DEFAULT_MASTODON["instance_url"]),
-    "user": field("string", DEFAULT_MASTODON["user"]),
-    "user_id": field("string", DEFAULT_MASTODON["user_id"]),
-    "profile_name": field("string", DEFAULT_MASTODON["profile_name"]),
-}
-
-
-MASTODON_TIMELINE_FIELDS = {
-    "container_id": field("string", DEFAULT_MASTODON_TIMELINE["container_id"]),
-    "timeline_type": field("string", DEFAULT_MASTODON_TIMELINE["timeline_type"]),
-    "default_theme": field("string", DEFAULT_MASTODON_TIMELINE["default_theme"]),
-    "max_posts_fetch": field("integer", DEFAULT_MASTODON_TIMELINE["max_posts_fetch"]),
-    "max_posts_show": field("integer", DEFAULT_MASTODON_TIMELINE["max_posts_show"]),
-    "hide_reblogs": field("boolean", DEFAULT_MASTODON_TIMELINE["hide_reblogs"]),
-    "hide_replies": field("boolean", DEFAULT_MASTODON_TIMELINE["hide_replies"]),
-}
-
-
-MASTODON_COMMENT_TEXT_FIELDS = {
-    "host": field("string", ""),
-    "user": field("string", ""),
-    "toot_id": field("string", ""),
-    "filter": field("string", ""),
-    "lang": field("string", ""),
-}
 
 
 def reject_unknown(raw: Mapping[str, Any], allowed: frozenset[str], path: str) -> None:
@@ -154,47 +121,33 @@ def load_mastodon_timeline(
     mastodon: Mapping[str, Any],
     timeline_config: Any = None,
 ) -> dict[str, Any]:
-    raw = content_value(
+    raw = mapping(
         timeline_config if timeline_config is not None else mastodon.get("timeline"),
         "site.mastodon.timeline",
-        "mapping",
-        default={},
+        error=ContentError,
     )
     reject_unknown(raw, MASTODON_TIMELINE_KEYS, "site.mastodon.timeline")
-    fields = content_fields(
-        raw,
-        "site.mastodon.timeline",
-        {
-            "enabled": field("boolean", bool(mastodon.get("enabled"))),
-            **MASTODON_TIMELINE_FIELDS,
-        },
-    )
-    timeline = deep_merge(
-        DEFAULT_MASTODON_TIMELINE,
-        fields,
-    )
+    timeline = deep_merge(DEFAULT_MASTODON_TIMELINE, raw)
 
     return {
-        "enabled": timeline["enabled"],
+        "enabled": raw.get("enabled", bool(mastodon.get("enabled"))),
         "container_id": timeline["container_id"],
         "options": timeline_browser_options(mastodon, timeline),
     }
 
 
 def load_mastodon_site_config(raw_config: Any) -> dict[str, Any]:
-    raw = content_value(raw_config, "site.mastodon", "mapping", default={})
+    raw = mapping(raw_config, "site.mastodon", error=ContentError)
     reject_unknown(raw, MASTODON_SITE_KEYS, "site.mastodon")
-    fields = content_fields(raw, "site.mastodon", MASTODON_SITE_FIELDS)
     config = deep_merge(
         DEFAULT_MASTODON,
         {key: copy_value(value) for key, value in raw.items() if key != "timeline"},
     )
-    host = mastodon_host(fields["host"] or fields["instance_url"])
-    instance_url = mastodon_instance_url(fields["instance_url"] or host)
+    host = mastodon_host(config.get("host") or config.get("instance_url"))
+    instance_url = mastodon_instance_url(config.get("instance_url") or host)
     mastodon = deep_merge(
         config,
         {
-            **fields,
             "host": host,
             "instance_url": instance_url,
         },
@@ -216,12 +169,7 @@ def load_mastodon_comment_defaults(mastodon: Mapping[str, Any]) -> dict[str, Any
         DEFAULT_MASTODON_COMMENTS,
         {
             "host": mastodon_host(mastodon.get("host") or mastodon.get("instance_url")),
-            "user": content_value(
-                mastodon.get("user"),
-                "site.mastodon.user",
-                "string",
-                default="",
-            ),
+            "user": mastodon.get("user") or "",
         },
     )
 
@@ -230,41 +178,30 @@ def load_mastodon_comments(
     raw_config: Any,
     site_mastodon: Mapping[str, Any],
 ) -> dict[str, Any]:
-    raw = content_value(raw_config, "mastodon_comments", "mapping", default={})
+    raw = mapping(raw_config, "mastodon_comments", error=ContentError)
     reject_unknown(raw, MASTODON_COMMENT_KEYS, "mastodon_comments")
     defaults = load_mastodon_comment_defaults(site_mastodon)
-    fields = content_fields(
-        raw,
-        "mastodon_comments",
-        {
-            "enabled": field("boolean", bool(raw)),
-            "status_url": field("string", ""),
-            **MASTODON_COMMENT_TEXT_FIELDS,
-        },
-    )
-    status_url = fields["status_url"]
+    status_url = raw.get("status_url") or ""
     from_status_url = parse_mastodon_status_url(status_url)
     explicit = {
-        key: fields[key]
-        for key in raw
+        key: copy_value(value)
+        for key, value in raw.items()
         if key not in {"enabled", "status_url"}
     }
     merged = deep_merge(deep_merge(defaults, from_status_url), explicit)
-    text_fields = content_fields(
-        merged,
-        "mastodon_comments",
-        MASTODON_COMMENT_TEXT_FIELDS,
-    )
     merged = deep_merge(
         merged,
         {
-            **text_fields,
-            "host": mastodon_host(text_fields["host"]),
+            "host": mastodon_host(merged.get("host")),
+            "user": merged.get("user") or "",
+            "toot_id": merged.get("toot_id") or "",
+            "filter": merged.get("filter") or "",
+            "lang": merged.get("lang") or "",
         },
     )
     has_thread = all(merged.get(key) for key in ("host", "user", "toot_id"))
 
     return deep_merge(
         merged,
-        {"enabled": has_thread and fields["enabled"]},
+        {"enabled": has_thread and raw.get("enabled", bool(raw))},
     )

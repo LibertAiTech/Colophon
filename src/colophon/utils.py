@@ -1,8 +1,7 @@
 """Small pure helpers shared by Colophon subsystems.
 
-Values flow through copy-on-write merges, strict schema checks, YAML loading,
-date parsing, route normalization, and URL helpers without subsystem-specific
-side effects.
+Values flow through copy-on-write merges, YAML loading, date parsing, route
+normalization, and URL helpers without subsystem-specific side effects.
 """
 
 from __future__ import annotations
@@ -18,84 +17,20 @@ import yaml
 from .errors import ProjectConfigError
 
 
-MISSING = object()
-
-
-SCHEMA_CHECKS = {
-    "mapping": lambda item: isinstance(item, Mapping),
-    "sequence": lambda item: isinstance(item, list | tuple),
-    "string": lambda item: isinstance(item, str),
-    "boolean": lambda item: isinstance(item, bool),
-    "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
-}
-
-
-SCHEMA_MESSAGES = {
-    "mapping": "must be a mapping",
-    "sequence": "must be a sequence",
-    "string": "must be a string",
-    "boolean": "must be a boolean",
-    "integer": "must be an integer",
-}
-
-
-def expect(
+def mapping(
     value: Any,
     path: str,
-    kind: str,
     *,
-    default: Any = MISSING,
-    error: type[Exception] = ProjectConfigError,
-    nonempty: bool = False,
-) -> Any:
-    if value is None:
-        if default is MISSING:
-            raise error(f"{path} {SCHEMA_MESSAGES[kind]}")
-
-        return copy_value(default)
-
-    if not SCHEMA_CHECKS[kind](value):
-        raise error(f"{path} {SCHEMA_MESSAGES[kind]}")
-
-    if kind == "mapping":
-        return dict(value)
-
-    if kind == "sequence":
-        return tuple(value)
-
-    if kind == "string":
-        text = value.strip()
-
-        if nonempty and not text:
-            raise error(f"{path} must not be empty")
-
-        return text
-
-    return value
-
-
-def field(kind: str, default: Any = MISSING, *, nonempty: bool = False) -> tuple[str, Any, bool]:
-    return kind, default, nonempty
-
-
-def expect_fields(
-    raw: Mapping[str, Any],
-    path: str,
-    fields: Mapping[str, tuple[str, Any, bool]],
-    *,
+    default: Mapping[str, Any] | None = None,
     error: type[Exception] = ProjectConfigError,
 ) -> dict[str, Any]:
-    return {
-        name: expect(
-            raw.get(name),
-            f"{path}.{name}",
-            kind,
-            default=default,
-            error=error,
-            nonempty=nonempty,
-        )
-        for name, (kind, default, nonempty) in fields.items()
-    }
+    if value is None:
+        return copy_value(default or {})
+
+    if not isinstance(value, Mapping):
+        raise error(f"{path} must be a mapping")
+
+    return dict(value)
 
 
 def copy_value(value: Any) -> Any:
@@ -147,7 +82,7 @@ def load_wrapped_yaml(paths: list[Path], *, unwrap: str | None = None) -> dict[s
     if unwrap and unwrap in data:
         nested = data[unwrap]
 
-        return expect(nested, f"{unwrap!r}", "mapping")
+        return mapping(nested, f"{unwrap!r}")
 
     return data
 

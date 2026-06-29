@@ -16,7 +16,7 @@ from .expressions import expression_registry, resolve_site_expressions, resolve_
 from .markdown import estimate_reading_minutes, render_markdown
 from .mastodon import DEFAULT_MASTODON, load_mastodon_site_config
 from .models import ContentLayer, PageContext, ProjectPaths, Route, SiteConfig, SourceFile, SourceFiles
-from .utils import copy_value, deep_merge, expect, load_first_yaml, load_wrapped_yaml, parse_date, read_yaml, route_parts
+from .utils import copy_value, deep_merge, load_first_yaml, load_wrapped_yaml, mapping, parse_date, read_yaml, route_parts
 
 
 YAML_EXTS = {".yaml", ".yml", ".json"}
@@ -383,7 +383,7 @@ def load_site_config(project: ProjectPaths) -> SiteConfig:
         registry=registry,
         path="site",
     )
-    raw_site = expect(raw.get("site"), "site", "mapping", default={})
+    raw_site = mapping(raw.get("site"), "site")
     site = deep_merge(DEFAULT_SITE, raw_site)
     site = deep_merge(
         site,
@@ -395,9 +395,9 @@ def load_site_config(project: ProjectPaths) -> SiteConfig:
         data={"site": site},
         templates=deep_merge(
             DEFAULT_TEMPLATES,
-            expect(raw.get("templates"), "templates", "mapping", default={}),
+            raw.get("templates") or {},
         ),
-        routes=list(expect(raw.get("routes"), "routes", "sequence", default=DEFAULT_ROUTES)),
+        routes=copy_value(raw.get("routes") or DEFAULT_ROUTES),
     )
 
 
@@ -405,14 +405,12 @@ def load_post_sidebar(project: ProjectPaths) -> dict[str, Any]:
     resolved_project = project
     return deep_merge(
         {"cards": []},
-        expect(
+        mapping(
             resolve_yaml_expression_values(
                 load_wrapped_yaml(list(resolved_project.post_sidebar_configs)),
                 registry=expression_registry(resolved_project),
                 path="post_sidebar",
             ),
             "post_sidebar",
-            "mapping",
-            default={},
         ),
     )
