@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -17,7 +19,13 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from tests import colophon_test_api as colophon
+import colophon
+from colophon.build import resolve_required_vendor_assets
+from colophon.content import load_site_config
+from colophon.deploy.config import validate_deploy_config
+from colophon.expressions import expression_registry, import_python_module, module_yaml_functions, resolve_yaml_expressions
+from colophon.utils import copy_value
+from colophon.vendor import load_vendor_config, vendor_url_for
 
 
 def write_text(path: Path, content: str) -> None:
@@ -36,6 +44,14 @@ def replace_site_title(root: Path, title: str) -> None:
 def read_site_output(root: Path, route: str) -> str:
     path = root / "_site" / route.strip("/") / "index.html"
     return path.read_text(encoding="utf-8")
+
+
+def file_bytes_by_relative_path(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
 
 
 class ColophonPackageTests(unittest.TestCase):
@@ -58,8 +74,25 @@ class ColophonPackageTests(unittest.TestCase):
         self.assertEqual(
             sorted(core.__all__),
             [
+                "AssetError",
+                "BuildFailure",
+                "BuildManifest",
+                "BuildMessage",
+                "BuildOptions",
+                "BuildResult",
+                "ColophonError",
+                "ConfigurationError",
+                "ContentError",
+                "DeployConfigError",
+                "DeployError",
+                "ExpressionResolutionError",
+                "InternalBuildError",
+                "ManifestEntry",
+                "ProjectConfigError",
+                "TemplateBuildError",
+                "__version__",
+                "build_project",
                 "build_site",
-                "default_config_project",
                 "deploy_site",
                 "main",
                 "project_from_config",
@@ -69,6 +102,208 @@ class ColophonPackageTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("usage: colophon", result.stdout)
+
+    def test_packaging_metadata_declares_distribution_surface(self) -> None:
+        metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        project = metadata["project"]
+
+        self.assertEqual(project["name"], "colophon")
+        self.assertEqual(project["license"]["text"], "Apache-2.0")
+        self.assertEqual(project["requires-python"], ">=3.11")
+        self.assertEqual(metadata["project"]["scripts"]["colophon"], "colophon.cli:main")
+        self.assertEqual(project["urls"]["Repository"], "https://github.com/AeonCypher/Colophon")
+        self.assertIn("Topic :: Internet :: WWW/HTTP :: Site Management", project["classifiers"])
+        self.assertNotIn("paramiko>=3", project["dependencies"])
+        self.assertEqual(project["optional-dependencies"]["sftp"], ["paramiko>=3"])
+
+    def test_programmatic_build_result_manifest_and_write_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            site = root / "demo"
+            manifest_path = root / "build-manifest.json"
+            colophon.scaffold_site(site)
+
+            result = colophon.build_site(
+                colophon.project_from_config(site / "colophon.yml"),
+                options=colophon.BuildOptions(build_time="2026-01-02T03:04:05Z"),
+            )
+            output_dir = result.output_dir
+            expected_output_dir = (site / "_site").resolve()
+            written = result.write_manifest(manifest_path)
+            manifest = json.loads(written.read_text(encoding="utf-8"))
+
+        self.assertIsInstance(result, colophon.BuildResult)
+        self.assertEqual(output_dir, expected_output_dir)
+        self.assertEqual(result.manifest.build_time, "2026-01-02T03:04:05+00:00")
+        self.assertGreater(result.counts["pages"], 0)
+        self.assertGreater(result.counts["posts"], 0)
+        self.assertGreater(result.counts["static_assets"], 0)
+        self.assertGreater(result.counts["generated_images"], 0)
+        self.assertEqual(result.manifest_path, None)
+        self.assertEqual(manifest["schema_version"], "1.0")
+        self.assertEqual(manifest["build_time"], "2026-01-02T03:04:05+00:00")
+        self.assertIn("pages", manifest)
+        self.assertIn("posts", manifest)
+        self.assertIn("generated_images", manifest)
+
+    def test_cli_and_python_builds_produce_equivalent_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            site = Path(tmp) / "demo"
+            colophon.scaffold_site(site)
+            build_time = "2026-01-02T03:04:05Z"
+
+            colophon.build_site(
+                colophon.project_from_config(site / "colophon.yml", output="_site_python"),
+                options=colophon.BuildOptions(build_time=build_time),
+            )
+
+            env = {
+                **os.environ,
+                "PYTHONPATH": str(SRC),
+            }
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "colophon",
+                    "build",
+                    "--config",
+                    str(site / "colophon.yml"),
+                    "--output",
+                    "_site_cli",
+                    "--build-time",
+                    build_time,
+                    "--quiet",
+                ],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            python_files = file_bytes_by_relative_path(site / "_site_python")
+            cli_files = file_bytes_by_relative_path(site / "_site_cli")
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(cli_files, python_files)
+
+    def test_cli_project_output_manifest_json_and_quiet_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            site = root / "demo"
+            manifest_path = root / "manifest.json"
+            colophon.scaffold_site(site)
+            env = {
+                **os.environ,
+                "PYTHONPATH": str(SRC),
+            }
+
+            json_result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "colophon",
+                    "--project",
+                    str(site),
+                    "build",
+                    "--output",
+                    "_site_cli",
+                    "--manifest",
+                    str(manifest_path),
+                    "--json",
+                    "--build-time",
+                    "2026-01-02T03:04:05Z",
+                ],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            quiet_result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "colophon",
+                    "build",
+                    "--project",
+                    str(site),
+                    "--output",
+                    "_site_quiet",
+                    "--quiet",
+                ],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            payload = json.loads(json_result.stdout)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            cli_output_exists = (site / "_site_cli" / "index.html").exists()
+            quiet_output_exists = (site / "_site_quiet" / "index.html").exists()
+
+        self.assertEqual(json_result.returncode, 0)
+        self.assertEqual(quiet_result.returncode, 0)
+        self.assertEqual(quiet_result.stdout, "")
+        self.assertTrue(cli_output_exists)
+        self.assertTrue(quiet_output_exists)
+        self.assertEqual(payload["manifest"]["build_time"], "2026-01-02T03:04:05+00:00")
+        self.assertEqual(manifest["build_time"], "2026-01-02T03:04:05+00:00")
+
+    def test_cli_and_api_report_readable_configuration_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing.yml"
+            env = {
+                **os.environ,
+                "PYTHONPATH": str(SRC),
+            }
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "colophon",
+                    "build",
+                    "--config",
+                    str(missing),
+                ],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            with self.assertRaisesRegex(colophon.ProjectConfigError, "missing project config"):
+                colophon.build_project(Path(tmp), config="missing.yml")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("configuration error:", result.stderr)
+        self.assertIn("missing project config", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_atomic_build_preserves_previous_output_after_template_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            site = Path(tmp) / "demo"
+            colophon.scaffold_site(site)
+            project = colophon.project_from_config(site / "colophon.yml")
+            colophon.build_site(
+                project,
+                options=colophon.BuildOptions(build_time="2026-01-02T03:04:05Z"),
+            )
+            previous = (site / "_site" / "index.html").read_bytes()
+            (site / "templates" / "index.html").unlink()
+
+            with self.assertRaises(colophon.TemplateBuildError):
+                colophon.build_site(
+                    project,
+                    options=colophon.BuildOptions(build_time="2026-01-02T03:04:06Z"),
+                )
+
+            current = (site / "_site" / "index.html").read_bytes()
+
+        self.assertEqual(current, previous)
 
     def test_two_configured_sites_build_independently_without_global_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -107,6 +342,29 @@ class ColophonPackageTests(unittest.TestCase):
 
         self.assertTrue(rendered_exists)
         self.assertEqual(serve_site.call_args.kwargs["test"], True)
+
+    def test_legacy_root_cli_flags_are_rejected(self) -> None:
+        for argv in (["--deploy"], ["--serve"], ["--watch"], ["--test"]):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit) as raised:
+                colophon.main(argv)
+
+            self.assertEqual(raised.exception.code, 2)
+
+    def test_strict_config_rejects_removed_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            site = Path(tmp) / "site"
+            site.mkdir()
+
+            write_text(site / "colophon.yml", "paths:\n  project: legacy\n")
+            with self.assertRaisesRegex(colophon.ProjectConfigError, "paths.project"):
+                colophon.project_from_config(site / "colophon.yml")
+
+            write_text(site / "colophon.yml", "vendor:\n  require:\n    - webawesome\n")
+            with self.assertRaisesRegex(colophon.ProjectConfigError, "vendor.require"):
+                colophon.project_from_config(site / "colophon.yml")
+
+        with self.assertRaisesRegex(colophon.DeployConfigError, "top-level deploy"):
+            validate_deploy_config({"targets": {"production": {}}})
 
     def test_scaffold_site_documents_and_builds_feature_examples(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -157,7 +415,7 @@ class ColophonPackageTests(unittest.TestCase):
         self.assertIn("Project config", outputs["features"])
         self.assertIn("collections.posts", outputs["variables"])
         self.assertIn("Generated logical image", outputs["images"])
-        self.assertIn("exists=False", outputs["images"])
+        self.assertNotIn("exists=False", outputs["images"])
         self.assertIn("Resolved hook values", outputs["hooks"])
         self.assertIn("READY", outputs["hooks"])
         self.assertIn("EXAMPLE_FTP_PASSWORD", outputs["deploy"])
@@ -254,14 +512,14 @@ site:
             )
 
             project = colophon.project_from_config(site / "colophon.yml")
-            config = colophon.load_site_config(project)
-            registry = colophon.module_yaml_functions(site / "site_hooks.py")
-            result = colophon.resolve_yaml_expressions(
+            config = load_site_config(project)
+            registry = module_yaml_functions(site / "site_hooks.py")
+            result = resolve_yaml_expressions(
                 {"value": "python::dynamic_value"},
                 registry=registry,
             )
             result["value"]["items"][0]["label"] = "changed"
-            module = colophon.import_python_module(site / "site_hooks.py")
+            module = import_python_module(site / "site_hooks.py")
 
         self.assertIn("VALUE: {'items': [{'label': 'original'}]}", config.data["site"]["signal_line"])
         self.assertEqual(module.generated["items"][0]["label"], "original")
@@ -284,10 +542,10 @@ site:
             )
 
             with self.assertRaisesRegex(colophon.ProjectConfigError, "missing Python extension"):
-                colophon.expression_registry(missing)
+                expression_registry(missing)
 
             with self.assertRaisesRegex(colophon.ProjectConfigError, "duplicate YAML function"):
-                colophon.expression_registry(duplicate)
+                expression_registry(duplicate)
 
     def test_sibling_site_builds_through_config_and_renders_existing_features(self) -> None:
         site_root = WORKSPACE_ROOT / "libertaitech"
@@ -320,9 +578,9 @@ site:
                 },
             },
         }
-        original = colophon.copy_value(raw)
+        original = copy_value(raw)
 
-        config = colophon.normalize_vendor_config(raw)
+        config = load_vendor_config(raw)
 
         self.assertEqual(raw, original)
         self.assertEqual(config.mode, "local")
@@ -368,13 +626,13 @@ vendor:
             auto_project = colophon.project_from_config(site / "colophon.yml")
             write_text(site / "static" / "vendor" / "dompurify" / "purify.min.js", "purify")
 
-            cdn_url = colophon.vendor_url_for(
+            cdn_url = vendor_url_for(
                 cdn_project,
                 ("dompurify",),
                 "dompurify",
                 "purify.min.js",
             )
-            auto_url = colophon.vendor_url_for(
+            auto_url = vendor_url_for(
                 auto_project,
                 ("dompurify",),
                 "dompurify",
@@ -464,7 +722,7 @@ mastodon_comments:
             )
             project = colophon.project_from_config(site / "colophon.yml")
 
-            assets = colophon.resolve_required_vendor_assets(project)
+            assets = resolve_required_vendor_assets(project)
 
         self.assertIn("dompurify", assets)
         self.assertIn("font-awesome", assets)
