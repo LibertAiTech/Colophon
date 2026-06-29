@@ -493,3 +493,7 @@ PYTHONPATH=../colophon_repo/src ../colophon_repo/.venv/bin/python -m colophon bu
 ```
 
 Backward compatibility with the old embedded generator layout is intentionally removed.
+
+# Authorship
+
+Initial Authors are a join collaboration between Shea Valentine and Aeon Cypher. 
