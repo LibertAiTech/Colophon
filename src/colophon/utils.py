@@ -1,8 +1,7 @@
 """Small pure helpers shared by Colophon subsystems.
 
-Values flow through copy-on-write merges, strict schema checks, YAML loading,
-date parsing, route normalization, and URL helpers without subsystem-specific
-side effects.
+Values flow through copy-on-write merges, YAML loading, date parsing, route
+normalization, and URL helpers without subsystem-specific side effects.
 """
 
 from __future__ import annotations
@@ -16,6 +15,22 @@ import dateparser
 import yaml
 
 from .errors import ProjectConfigError
+
+
+def mapping(
+    value: Any,
+    path: str,
+    *,
+    default: Mapping[str, Any] | None = None,
+    error: type[Exception] = ProjectConfigError,
+) -> dict[str, Any]:
+    if value is None:
+        return copy_value(default or {})
+
+    if not isinstance(value, Mapping):
+        raise error(f"{path} must be a mapping")
+
+    return dict(value)
 
 
 def copy_value(value: Any) -> Any:
@@ -67,59 +82,9 @@ def load_wrapped_yaml(paths: list[Path], *, unwrap: str | None = None) -> dict[s
     if unwrap and unwrap in data:
         nested = data[unwrap]
 
-        if not isinstance(nested, Mapping):
-            raise ProjectConfigError(f"{unwrap!r} must contain a YAML mapping/object")
-
-        return dict(nested)
+        return mapping(nested, f"{unwrap!r}")
 
     return data
-
-
-def require_mapping(value: Any, path: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ProjectConfigError(f"{path} must be a mapping")
-
-    return dict(value)
-
-
-def optional_mapping(value: Any, path: str) -> dict[str, Any]:
-    return {} if value is None else require_mapping(value, path)
-
-
-def require_sequence(value: Any, path: str) -> tuple[Any, ...]:
-    if not isinstance(value, list | tuple):
-        raise ProjectConfigError(f"{path} must be a sequence")
-
-    return tuple(value)
-
-
-def optional_sequence(value: Any, path: str) -> tuple[Any, ...]:
-    return () if value is None else require_sequence(value, path)
-
-
-def require_string(value: Any, path: str) -> str:
-    if not isinstance(value, str):
-        raise ProjectConfigError(f"{path} must be a string")
-
-    if not value.strip():
-        raise ProjectConfigError(f"{path} must not be empty")
-
-    return value
-
-
-def optional_string(value: Any, path: str, default: str = "") -> str:
-    return default if value is None else require_string(value, path)
-
-
-def require_bool(value: Any, path: str) -> bool:
-    if not isinstance(value, bool):
-        raise ProjectConfigError(f"{path} must be a boolean")
-
-    return value
-
-
-def optional_bool(value: Any, path: str, default: bool = False) -> bool:
-    return default if value is None else require_bool(value, path)
 
 
 def parse_date(value: Any) -> dt.date | None:

@@ -17,7 +17,7 @@ from slugify import slugify
 from .errors import AssetError
 from .expressions import expression_registry, resolve_yaml_expression_values
 from .models import ProjectPaths, RenderJob
-from .utils import copy_value, deep_merge, load_wrapped_yaml, optional_mapping
+from .utils import copy_value, deep_merge, load_wrapped_yaml, mapping
 
 from PIL import Image, ImageFilter, ImageOps
 
@@ -43,7 +43,7 @@ AUTO_CROP_MIN_MEAN_SIGNAL = 1.0
 
 def load_images(project: ProjectPaths) -> dict[str, Any]:
     resolved_project = project
-    return optional_mapping(
+    return mapping(
         resolve_yaml_expression_values(
             load_wrapped_yaml(list(resolved_project.image_configs), unwrap="images"),
             registry=expression_registry(resolved_project),

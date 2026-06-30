@@ -17,7 +17,7 @@ from slugify import slugify
 from .collections import sorted_pages
 from .errors import TemplateBuildError
 from .models import PageContext, ProjectPaths, RenderJob, Route, SiteConfig
-from .utils import deep_merge, optional_mapping, public_url
+from .utils import deep_merge, public_url
 from .vendor import vendor_url_for
 
 
@@ -68,10 +68,10 @@ def make_environment(
 
 
 def page_uses_mastodon_timeline(context: Mapping[str, Any]) -> bool:
-    mastodon = optional_mapping(optional_mapping(context.get("site"), "site").get("mastodon"), "site.mastodon")
-    timeline = optional_mapping(mastodon.get("timeline"), "site.mastodon.timeline")
-    sidebar = optional_mapping(context.get("sidebar"), "sidebar")
-    cards = sidebar.get("cards") if isinstance(sidebar.get("cards"), list) else []
+    mastodon = (context.get("site") or {}).get("mastodon") or {}
+    timeline = mastodon.get("timeline") or {}
+    sidebar = context.get("sidebar") or {}
+    cards = sidebar.get("cards") or ()
 
     return timeline.get("enabled") is True and any(
         isinstance(card, Mapping) and card.get("type") == "mastodon_timeline"

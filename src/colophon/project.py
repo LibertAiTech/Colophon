@@ -12,7 +12,7 @@ from typing import Any
 
 from .errors import ProjectConfigError
 from .models import ProjectPaths
-from .utils import deep_merge, optional_mapping, optional_sequence, read_yaml, require_mapping, require_string
+from .utils import deep_merge, mapping, read_yaml
 from .vendor import load_vendor_config
 
 
@@ -23,7 +23,7 @@ CONFIG_EXTS = (".yaml", ".yml")
 
 
 def absolute_project_path(root: Path, value: Any, default: str) -> Path:
-    text = default if value is None else require_string(value, "project path")
+    text = (default if value is None else value).strip()
     path = Path(text).expanduser()
     return path if path.is_absolute() else root / path
 
@@ -32,11 +32,7 @@ def load_project_file(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         raise ProjectConfigError(f"missing project config: {config_path}")
 
-    data = read_yaml(config_path)
-    if not isinstance(data, Mapping):
-        raise ProjectConfigError(f"project config must be a YAML mapping: {config_path}")
-
-    return dict(data)
+    return mapping(read_yaml(config_path), f"project config {config_path}")
 
 
 def validate_project_keys(raw: Mapping[str, Any]) -> None:
@@ -52,7 +48,7 @@ def path_overrides(
     output: str | None,
 ) -> dict[str, str]:
     return {
-        key: require_string(value, f"--{key}")
+        key: value.strip()
         for key, value in {
             "content": content,
             "templates": templates,
@@ -65,8 +61,12 @@ def path_overrides(
 
 def python_modules_from_config(root: Path, raw_python: Mapping[str, Any]) -> tuple[Path, ...]:
     return tuple(
-        absolute_project_path(root, require_string(item, "python.modules[]"), "")
-        for item in optional_sequence(raw_python.get("modules"), "python.modules")
+        absolute_project_path(
+            root,
+            item.strip(),
+            "",
+        )
+        for item in raw_python.get("modules") or ()
     )
 
 
@@ -85,10 +85,10 @@ def project_from_config(
     root = config_file.parent.resolve()
     raw = load_project_file(config_file)
     validate_project_keys(raw)
-    raw_paths = optional_mapping(raw.get("paths"), "paths")
+    raw_paths = mapping(raw.get("paths"), "paths")
     if "project" in raw_paths:
         raise ProjectConfigError("paths.project is not supported; use the config file location or --project")
-    raw_python = optional_mapping(raw.get("python"), "python")
+    raw_python = mapping(raw.get("python"), "python")
     path_values = deep_merge(
         raw_paths,
         path_overrides(content=content, templates=templates, static=static, output=output),
