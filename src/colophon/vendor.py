@@ -17,7 +17,7 @@ from urllib.request import urlopen
 
 from .errors import ProjectConfigError
 from .models import PageContext, ProjectPaths, SiteConfig, VendorAssetOverride, VendorConfig
-from .utils import bool_value, mapping_value
+from .utils import mapping
 
 
 VENDOR_MODES = {"auto", "cdn", "local"}
@@ -100,20 +100,20 @@ BUILTIN_VENDOR_ASSETS = {
 ByteFetcher = Callable[[str], bytes]
 
 
-def normalize_name(value: Any) -> str:
-    return str(value or "").strip()
+def validate_name(value: Any, path: str) -> str:
+    name = value.strip()
+    if not name:
+        raise ProjectConfigError(f"{path} must not be empty")
+
+    return name
 
 
-def normalize_names(value: Any) -> tuple[str, ...]:
-    if value in (None, ""):
-        return ()
-
-    values = value if isinstance(value, (list, tuple, set)) else [value]
+def validate_names(value: Any, path: str) -> tuple[str, ...]:
+    values = value or ()
     return tuple(
         dict.fromkeys(
             name
-            for name in (normalize_name(item) for item in values)
-            if name
+            for name in (validate_name(item, f"{path}[]") for item in values)
         )
     )
 
@@ -128,99 +128,83 @@ def relative_posix_path(value: Any, *, label: str) -> str:
     return path.as_posix()
 
 
-def optional_bool(value: Any) -> bool | None:
-    if value in (None, "", "auto"):
-        return None
-
-    return bool_value(value)
-
-
-def normalize_file_urls(value: Any) -> tuple[tuple[str, str], ...]:
-    raw = mapping_value(value)
+def validate_file_urls(value: Any, path: str) -> tuple[tuple[str, str], ...]:
+    raw = mapping(value, path)
     return tuple(
         sorted(
             (
-                relative_posix_path(path, label="vendor asset file"),
-                str(url),
+                relative_posix_path(relative_path, label="vendor asset file"),
+                validate_name(url, f"{path}.{relative_path}"),
             )
-            for path, url in raw.items()
-            if str(url or "").strip()
+            for relative_path, url in raw.items()
         )
     )
 
 
-def normalize_vendor_asset_override(value: Any) -> VendorAssetOverride:
-    if isinstance(value, bool) or isinstance(value, str) and value.strip().lower() in {
-        "0",
-        "1",
-        "false",
-        "no",
-        "off",
-        "on",
-        "true",
-        "yes",
-    }:
-        return VendorAssetOverride(enabled=bool_value(value))
-
-    raw = mapping_value(value)
-    raw_files = raw.get("files")
+def load_vendor_asset_override(value: Any, path: str) -> VendorAssetOverride:
+    raw = mapping(value, path)
     cdn_files = (
-        normalize_file_urls(raw.get("cdn_files"))
-        + normalize_file_urls(raw_files if isinstance(raw_files, Mapping) else {})
+        validate_file_urls(raw.get("cdn_files"), f"{path}.cdn_files")
+        + validate_file_urls(raw.get("files"), f"{path}.files")
     )
-    required_files = normalize_names(
-        raw.get("required_files")
-        or ([] if isinstance(raw_files, Mapping) else raw_files)
-    )
+    required_files = validate_names(raw.get("required_files"), f"{path}.required_files")
+    local_path = raw.get("local_path") or ""
+    cdn_base = raw.get("cdn_base") or ""
+    archive_prefix = raw.get("archive_prefix") or ""
 
     return VendorAssetOverride(
-        enabled=optional_bool(raw.get("enabled")),
+        enabled=raw.get("enabled"),
         local_path=(
-            relative_posix_path(raw["local_path"], label="vendor asset local_path")
-            if raw.get("local_path")
+            relative_posix_path(local_path, label="vendor asset local_path")
+            if local_path
             else None
         ),
-        cdn_base=str(raw.get("cdn_base") or "").rstrip("/") or None,
+        cdn_base=cdn_base.rstrip("/") if cdn_base else None,
         required_files=tuple(
             relative_posix_path(path, label="vendor asset required file")
             for path in required_files
         ),
         cdn_files=tuple(dict(cdn_files).items()),
-        dependencies=normalize_names(raw.get("dependencies")),
-        archive_url=str(raw.get("archive_url") or "").strip() or None,
+        dependencies=validate_names(raw.get("dependencies"), f"{path}.dependencies"),
+        archive_url=raw.get("archive_url") or None,
         archive_prefix=(
-            str(raw.get("archive_prefix")).strip().lstrip("/")
-            if raw.get("archive_prefix")
+            archive_prefix.lstrip("/")
+            if archive_prefix
             else None
         ),
     )
 
 
-def normalize_vendor_config(raw_config: Any) -> VendorConfig:
-    raw = mapping_value(raw_config)
-    mode = str(raw.get("mode") or "auto").strip().lower()
+def load_vendor_config(raw_config: Any) -> VendorConfig:
+    raw = mapping(raw_config, "vendor")
+    if "require" in raw:
+        raise ProjectConfigError("vendor.require is not supported; use vendor.required")
+
+    mode = (raw.get("mode") or "auto").strip().lower()
 
     if mode not in VENDOR_MODES:
         raise ProjectConfigError(
             f"vendor.mode must be one of {', '.join(sorted(VENDOR_MODES))}: {mode}"
         )
 
-    raw_assets = mapping_value(raw.get("assets"))
+    raw_assets = mapping(raw.get("assets"), "vendor.assets")
     assets = tuple(
         sorted(
             (
-                normalize_name(name),
-                normalize_vendor_asset_override(value),
+                validate_name(name, "vendor.assets key"),
+                load_vendor_asset_override(value, f"vendor.assets.{name}"),
             )
             for name, value in raw_assets.items()
-            if normalize_name(name)
         )
     )
 
     return VendorConfig(
         mode=mode,
-        local_dir=relative_posix_path(raw.get("local_dir") or "vendor", label="vendor.local_dir"),
-        required=normalize_names(raw.get("required") or raw.get("require")),
+        local_dir=relative_posix_path(
+            raw.get("local_dir") or "vendor",
+            label="vendor.local_dir",
+        ),
+        required=validate_names(raw.get("required"), "vendor.required"),
         assets=assets,
     )
 
@@ -293,12 +277,12 @@ def expand_vendor_assets(names: Iterable[str], config: VendorConfig) -> tuple[st
 
 
 def page_uses_mastodon_timeline_data(context: Mapping[str, Any]) -> bool:
-    mastodon = mapping_value(context.get("site", {}).get("mastodon"))
-    timeline = mapping_value(mastodon.get("timeline"))
-    sidebar = mapping_value(context.get("sidebar"))
-    cards = sidebar.get("cards") if isinstance(sidebar.get("cards"), list) else []
+    mastodon = context["site"].get("mastodon") or {}
+    timeline = mastodon.get("timeline") or {}
+    sidebar = context.get("sidebar") or {}
+    cards = sidebar.get("cards") or ()
 
-    return bool_value(timeline.get("enabled")) and any(
+    return bool(timeline.get("enabled")) and any(
         isinstance(card, Mapping) and card.get("type") == "mastodon_timeline"
         for card in cards
     )
@@ -313,7 +297,7 @@ def content_required_vendor_assets(
         for context in contexts
         for name in (
             ("mastodon-comments",)
-            if mapping_value(context.data.get("mastodon_comments")).get("enabled")
+            if (context.data.get("mastodon_comments") or {}).get("enabled")
             else ()
         )
         + (
@@ -322,9 +306,10 @@ def content_required_vendor_assets(
             else ()
         )
     )
-    site_vendor = mapping_value(site_config.data.get("site", {}).get("vendor"))
+    site_vendor = site_config.data["site"].get("vendor") or {}
+    site_required = validate_names(site_vendor.get("required"), "site.vendor.required")
 
-    return tuple(dict.fromkeys((*normalize_names(site_vendor.get("required")), *context_names)))
+    return tuple(dict.fromkeys((*site_required, *context_names)))
 
 
 def required_vendor_assets(

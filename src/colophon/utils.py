@@ -1,7 +1,7 @@
 """Small pure helpers shared by Colophon subsystems.
 
-Values flow through copy-on-write merges, YAML loading, date/boolean coercion,
-route normalization, and URL helpers without subsystem-specific side effects.
+Values flow through copy-on-write merges, YAML loading, date parsing, route
+normalization, and URL helpers without subsystem-specific side effects.
 """
 
 from __future__ import annotations
@@ -13,6 +13,24 @@ from typing import Any
 
 import dateparser
 import yaml
+
+from .errors import ProjectConfigError
+
+
+def mapping(
+    value: Any,
+    path: str,
+    *,
+    default: Mapping[str, Any] | None = None,
+    error: type[Exception] = ProjectConfigError,
+) -> dict[str, Any]:
+    if value is None:
+        return copy_value(default or {})
+
+    if not isinstance(value, Mapping):
+        raise error(f"{path} must be a mapping")
+
+    return dict(value)
 
 
 def copy_value(value: Any) -> Any:
@@ -64,10 +82,7 @@ def load_wrapped_yaml(paths: list[Path], *, unwrap: str | None = None) -> dict[s
     if unwrap and unwrap in data:
         nested = data[unwrap]
 
-        if not isinstance(nested, Mapping):
-            raise TypeError(f"{unwrap!r} must contain a YAML mapping/object")
-
-        return dict(nested)
+        return mapping(nested, f"{unwrap!r}")
 
     return data
 
@@ -84,23 +99,6 @@ def parse_date(value: Any) -> dt.date | None:
 
     parsed = dateparser.parse(str(value))
     return parsed.date() if parsed else None
-
-
-def bool_value(value: Any, default: bool = False) -> bool:
-    if value in (None, ""):
-        return default
-
-    if isinstance(value, bool):
-        return value
-
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-
-    return bool(value)
-
-
-def mapping_value(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def trim_url(value: Any) -> str:

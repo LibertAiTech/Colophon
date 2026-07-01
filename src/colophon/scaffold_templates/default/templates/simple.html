@@ -45,11 +45,7 @@
           {% for example in image_examples %}
             {% set img = image(example.image, example.variant|default(none)) %}
             <figure class="card media-card">
-              {% if img.exists and img.url %}
-                <img src="{{ img.url }}" alt="{{ img.alt|default(example.title) }}" width="{{ img.width }}" height="{{ img.height }}" loading="lazy">
-              {% else %}
-                <div class="placeholder" style="--w: {{ img.width }}; --h: {{ img.height }};">{{ img.label }}</div>
-              {% endif %}
+              <img src="{{ img.url }}" alt="{{ img.alt|default(example.title) }}" width="{{ img.width }}" height="{{ img.height }}" loading="lazy">
               <figcaption>
                 <strong>{{ example.title }}</strong>
                 <span>{{ example.text }}</span>

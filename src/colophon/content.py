@@ -14,10 +14,9 @@ import frontmatter
 
 from .expressions import expression_registry, resolve_site_expressions, resolve_yaml_expression_values
 from .markdown import estimate_reading_minutes, render_markdown
-from .mastodon import DEFAULT_MASTODON, normalize_mastodon_site_config
+from .mastodon import DEFAULT_MASTODON, load_mastodon_site_config
 from .models import ContentLayer, PageContext, ProjectPaths, Route, SiteConfig, SourceFile, SourceFiles
-from .project import project_or_default
-from .utils import copy_value, deep_merge, load_first_yaml, load_wrapped_yaml, mapping_value, parse_date, read_yaml, route_parts
+from .utils import copy_value, deep_merge, load_first_yaml, load_wrapped_yaml, mapping, parse_date, read_yaml, route_parts
 
 
 YAML_EXTS = {".yaml", ".yml", ".json"}
@@ -221,8 +220,8 @@ def build_source_chain(route: Route, content_index: SourceFiles) -> tuple[Source
     return tuple(candidates)
 
 
-def discover_colocated_assets(source_file: SourceFile, project: ProjectPaths | None = None) -> frozenset[str]:
-    resolved_project = project_or_default(project)
+def discover_colocated_assets(source_file: SourceFile, project: ProjectPaths) -> frozenset[str]:
+    resolved_project = project
     assets = {
         path.relative_to(resolved_project.content_dir).as_posix()
         for path in source_file.absolute_path.parent.iterdir()
@@ -283,7 +282,7 @@ def normalize_layer_data(
 def load_content_layer(
     source_file: SourceFile,
     target_route: Route,
-    project: ProjectPaths | None = None,
+    project: ProjectPaths,
 ) -> ContentLayer:
     route = route_for_content_file(source_file)
 
@@ -356,7 +355,7 @@ def build_page_context(
     route: Route,
     source_chain: tuple[SourceFile, ...],
     site_config: SiteConfig,
-    project: ProjectPaths | None = None,
+    project: ProjectPaths,
 ) -> PageContext:
     page_context = PageContext(
         route=route,
@@ -376,38 +375,42 @@ def build_page_context(
     return page_context
 
 
-def load_site_config(project: ProjectPaths | None = None) -> SiteConfig:
-    resolved_project = project_or_default(project)
+def load_site_config(project: ProjectPaths) -> SiteConfig:
+    resolved_project = project
     registry = expression_registry(resolved_project)
     raw = resolve_yaml_expression_values(
         load_first_yaml(list(resolved_project.site_configs)),
         registry=registry,
         path="site",
     )
-    raw_site = raw.get("site") or {}
+    raw_site = mapping(raw.get("site"), "site")
     site = deep_merge(DEFAULT_SITE, raw_site)
     site = deep_merge(
         site,
-        {"mastodon": normalize_mastodon_site_config(mapping_value(raw_site).get("mastodon"))},
+        {"mastodon": load_mastodon_site_config(raw_site.get("mastodon"))},
     )
     site = resolve_site_expressions(site, registry=registry)
 
     return SiteConfig(
         data={"site": site},
-        templates=deep_merge(DEFAULT_TEMPLATES, raw.get("templates") or {}),
+        templates=deep_merge(
+            DEFAULT_TEMPLATES,
+            raw.get("templates") or {},
+        ),
         routes=copy_value(raw.get("routes") or DEFAULT_ROUTES),
     )
 
 
-def load_post_sidebar(project: ProjectPaths | None = None) -> dict[str, Any]:
-    resolved_project = project_or_default(project)
+def load_post_sidebar(project: ProjectPaths) -> dict[str, Any]:
+    resolved_project = project
     return deep_merge(
         {"cards": []},
-        mapping_value(
+        mapping(
             resolve_yaml_expression_values(
                 load_wrapped_yaml(list(resolved_project.post_sidebar_configs)),
                 registry=expression_registry(resolved_project),
                 path="post_sidebar",
-            )
+            ),
+            "post_sidebar",
         ),
     )

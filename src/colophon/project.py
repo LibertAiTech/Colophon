@@ -12,47 +12,8 @@ from typing import Any
 
 from .errors import ProjectConfigError
 from .models import ProjectPaths
-from .utils import deep_merge, mapping_value, read_yaml
-from .vendor import normalize_vendor_config
-
-
-ROOT = Path(__file__).resolve().parent
-
-
-CONTENT = ROOT / "content"
-
-
-POSTS = CONTENT / "posts"
-
-
-CONTENT_IMAGES = CONTENT / "images"
-
-
-TEMPLATES = ROOT / "templates"
-
-
-STATIC = ROOT / "static"
-
-
-OUT = ROOT / "_site"
-
-
-DEPLOY_CONFIG = CONTENT / "deploy.yaml"
-
-
-SITE_CONFIGS = [CONTENT / "site.yaml", CONTENT / "site.yml"]
-
-
-IMAGE_CONFIGS = [CONTENT / "images.yaml", CONTENT / "images.yml"]
-
-
-POST_SIDEBAR_CONFIGS = [CONTENT / "post-sidebar.yaml", CONTENT / "post-sidebar.yml"]
-
-
-WATCHED_DIRS = [CONTENT, TEMPLATES, STATIC]
-
-
-WATCHED_FILES = [Path(__file__).resolve()]
+from .utils import deep_merge, mapping, read_yaml
+from .vendor import load_vendor_config
 
 
 DEFAULT_CONFIG_FILE = "colophon.yml"
@@ -62,67 +23,51 @@ CONFIG_EXTS = (".yaml", ".yml")
 
 
 def absolute_project_path(root: Path, value: Any, default: str) -> Path:
-    path = Path(str(value or default)).expanduser()
+    text = (default if value is None else value).strip()
+    path = Path(text).expanduser()
     return path if path.is_absolute() else root / path
-
-
-def conventional_project(root: Path) -> ProjectPaths:
-    root = root.resolve()
-    content = root / "content"
-    templates = root / "templates"
-    static = root / "static"
-    output = root / "_site"
-
-    return ProjectPaths(
-        root=root,
-        content_dir=content,
-        posts_dir=content / "posts",
-        content_images_dir=content / "images",
-        templates_dir=templates,
-        static_dir=static,
-        output_dir=output,
-        deploy_config=content / "deploy.yaml",
-        site_configs=(content / "site.yaml", content / "site.yml"),
-        image_configs=(content / "images.yaml", content / "images.yml"),
-        post_sidebar_configs=(content / "post-sidebar.yaml", content / "post-sidebar.yml"),
-        watched_dirs=(content, templates, static),
-        watched_files=(),
-        python_modules=(),
-    )
-
-
-def legacy_project() -> ProjectPaths:
-    return ProjectPaths(
-        root=ROOT,
-        content_dir=CONTENT,
-        posts_dir=POSTS,
-        content_images_dir=CONTENT_IMAGES,
-        templates_dir=TEMPLATES,
-        static_dir=STATIC,
-        output_dir=OUT,
-        deploy_config=DEPLOY_CONFIG,
-        site_configs=tuple(SITE_CONFIGS),
-        image_configs=tuple(IMAGE_CONFIGS),
-        post_sidebar_configs=tuple(POST_SIDEBAR_CONFIGS),
-        watched_dirs=tuple(WATCHED_DIRS),
-        watched_files=tuple(WATCHED_FILES),
-        python_modules=(),
-    )
-
-
-def project_or_default(project: ProjectPaths | None = None) -> ProjectPaths:
-    return legacy_project() if project is None else project
 
 
 def load_project_file(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         raise ProjectConfigError(f"missing project config: {config_path}")
 
-    data = read_yaml(config_path)
-    if not isinstance(data, Mapping):
-        raise ProjectConfigError(f"project config must be a YAML mapping: {config_path}")
+    return mapping(read_yaml(config_path), f"project config {config_path}")
 
-    return dict(data)
+
+def validate_project_keys(raw: Mapping[str, Any]) -> None:
+    if "project" in raw:
+        raise ProjectConfigError("project config must use 'paths', not legacy 'project'")
+
+
+def path_overrides(
+    *,
+    content: str | None,
+    templates: str | None,
+    static: str | None,
+    output: str | None,
+) -> dict[str, str]:
+    return {
+        key: value.strip()
+        for key, value in {
+            "content": content,
+            "templates": templates,
+            "static": static,
+            "output": output,
+        }.items()
+        if value is not None
+    }
+
+
+def python_modules_from_config(root: Path, raw_python: Mapping[str, Any]) -> tuple[Path, ...]:
+    return tuple(
+        absolute_project_path(
+            root,
+            item.strip(),
+            "",
+        )
+        for item in raw_python.get("modules") or ()
+    )
 
 
 def project_from_config(
@@ -139,36 +84,27 @@ def project_from_config(
 
     root = config_file.parent.resolve()
     raw = load_project_file(config_file)
-    raw_paths = mapping_value(raw.get("paths") or raw.get("project"))
-    raw_python = mapping_value(raw.get("python"))
+    validate_project_keys(raw)
+    raw_paths = mapping(raw.get("paths"), "paths")
+    if "project" in raw_paths:
+        raise ProjectConfigError("paths.project is not supported; use the config file location or --project")
+    raw_python = mapping(raw.get("python"), "python")
     path_values = deep_merge(
         raw_paths,
-        {
-            key: value
-            for key, value in {
-                "content": content,
-                "templates": templates,
-                "static": static,
-                "output": output,
-            }.items()
-            if value is not None
-        },
+        path_overrides(content=content, templates=templates, static=static, output=output),
     )
     content_dir = absolute_project_path(root, path_values.get("content"), "content")
     templates_dir = absolute_project_path(root, path_values.get("templates"), "templates")
     static_dir = absolute_project_path(root, path_values.get("static"), "static")
     output_dir = absolute_project_path(root, path_values.get("output"), "_site")
+    if "deploy_config" in path_values:
+        raise ProjectConfigError("paths.deploy_config is not supported; use paths.deploy")
     deploy_config = absolute_project_path(
         root,
-        path_values.get("deploy") or path_values.get("deploy_config"),
+        path_values.get("deploy"),
         "content/deploy.yaml",
     )
-    raw_modules = raw_python.get("modules") or []
-    module_entries = raw_modules if isinstance(raw_modules, list) else [raw_modules]
-    python_modules = tuple(
-        absolute_project_path(root, item, str(item))
-        for item in module_entries
-    )
+    python_modules = python_modules_from_config(root, raw_python)
 
     return ProjectPaths(
         root=root,
@@ -185,10 +121,27 @@ def project_from_config(
         watched_dirs=(content_dir, templates_dir, static_dir),
         watched_files=(config_file, *python_modules),
         python_modules=python_modules,
-        vendor=normalize_vendor_config(raw.get("vendor")),
+        vendor=load_vendor_config(raw.get("vendor")),
     )
 
 
-def default_config_project() -> ProjectPaths:
-    config_file = Path.cwd() / DEFAULT_CONFIG_FILE
-    return project_from_config(config_file) if config_file.exists() else conventional_project(Path.cwd())
+def project_from_inputs(
+    project_path: Path | str = ".",
+    *,
+    config: Path | str | None = None,
+    content: str | None = None,
+    templates: str | None = None,
+    static: str | None = None,
+    output: str | None = None,
+) -> ProjectPaths:
+    root = Path(project_path).expanduser().resolve()
+    config_file = Path(config or DEFAULT_CONFIG_FILE).expanduser()
+    config_path = config_file if config_file.is_absolute() else root / config_file
+
+    return project_from_config(
+        config_path,
+        content=content,
+        templates=templates,
+        static=static,
+        output=output,
+    )

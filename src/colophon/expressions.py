@@ -6,65 +6,36 @@ Jinja template strings before downstream content, image, and deploy stages use i
 
 from __future__ import annotations
 
-import datetime as dt
 import importlib.util
 import os
-import random
 import re
 import sys
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from jinja2 import Environment, StrictUndefined, TemplateError
 from slugify import slugify
 
 from .errors import ExpressionResolutionError, ProjectConfigError
-from .models import ExpressionFunction, PageContext, ProjectPaths
-from .project import project_or_default
-from .utils import copy_value, deep_merge, mapping_value
+from .models import ExpressionContext, ExpressionContextFunction, ExpressionFunction, PageContext, ProjectPaths
+from .utils import copy_value, deep_merge, mapping, parse_date
 
+# TODO: Make expression prefixes configurable, and allow for custom prefixes to be registered with the expression resolver.
 
 ENV_EXPRESSION_PREFIX = "env::"
 PYTHON_EXPRESSION_PREFIX = "python::"
 SIGNAL_LINE_SEPARATOR = " // "
+YAML_FUNCTIONS: dict[str, ExpressionFunction] = {}
+YAML_CONTEXT_FUNCTIONS: dict[str, ExpressionContextFunction] = {}
 
 
-def generate_random_color() -> str:
-    return random.choice(
-        [
-            "amber",
-            "cyan",
-            "green",
-            "magenta",
-            "violet",
-        ]
-    )
-
-
-def generate_random_temperature() -> str:
-    return f"{random.randint(-20, 42)}C"
-
-
-def get_moon_phase() -> str:
-    phases = (
-        "new",
-        "waxing crescent",
-        "first quarter",
-        "waxing gibbous",
-        "full",
-        "waning gibbous",
-        "last quarter",
-        "waning crescent",
-    )
-    return phases[dt.date.today().toordinal() % len(phases)]
-
-
-YAML_FUNCTIONS: dict[str, ExpressionFunction] = {
-    "generate_random_color": generate_random_color,
-    "generate_random_temperature": generate_random_temperature,
-    "get_moon_phase": get_moon_phase,
-}
+@dataclass(frozen=True)
+class ExpressionRegistry:
+    functions: Mapping[str, ExpressionFunction]
+    context_functions: Mapping[str, ExpressionContextFunction]
 
 
 def import_python_module(path: Path) -> Any:
@@ -88,22 +59,42 @@ def import_python_module(path: Path) -> Any:
     return module
 
 
-def module_yaml_functions(path: Path) -> dict[str, ExpressionFunction]:
-    module = import_python_module(path)
-    registry = getattr(module, "YAML_FUNCTIONS", None)
+def module_function_mapping(module: Any, path: Path, attribute: str) -> dict[str, Any]:
+    registry = getattr(module, attribute, {})
 
     if callable(registry):
         registry = registry()
 
+    if registry is None:
+        registry = {}
+
     if not isinstance(registry, Mapping):
-        raise ProjectConfigError(f"{path}: YAML_FUNCTIONS must be a mapping or zero-argument function")
+        raise ProjectConfigError(f"{path}: {attribute} must be a mapping or zero-argument function")
 
     invalid = [name for name, function in registry.items() if not callable(function)]
 
     if invalid:
-        raise ProjectConfigError(f"{path}: YAML function(s) are not callable: {', '.join(map(str, invalid))}")
+        raise ProjectConfigError(f"{path}: {attribute} function(s) are not callable: {', '.join(map(str, invalid))}")
 
     return {str(name): function for name, function in registry.items()}
+
+
+def module_yaml_functions(path: Path) -> dict[str, ExpressionFunction]:
+    module = import_python_module(path)
+    return module_function_mapping(module, path, "YAML_FUNCTIONS")
+
+
+def module_yaml_context_functions(path: Path) -> dict[str, ExpressionContextFunction]:
+    module = import_python_module(path)
+    return module_function_mapping(module, path, "YAML_CONTEXT_FUNCTIONS")
+
+
+def module_expression_registry(path: Path) -> ExpressionRegistry:
+    module = import_python_module(path)
+    return ExpressionRegistry(
+        functions=module_function_mapping(module, path, "YAML_FUNCTIONS"),
+        context_functions=module_function_mapping(module, path, "YAML_CONTEXT_FUNCTIONS"),
+    )
 
 
 def merge_function_registries(registries: list[Mapping[str, ExpressionFunction]]) -> dict[str, ExpressionFunction]:
@@ -120,10 +111,59 @@ def merge_function_registries(registries: list[Mapping[str, ExpressionFunction]]
     return merged
 
 
-def expression_registry(project: ProjectPaths | None = None) -> dict[str, ExpressionFunction]:
-    resolved_project = project_or_default(project)
-    custom = [module_yaml_functions(path) for path in resolved_project.python_modules]
-    return merge_function_registries([YAML_FUNCTIONS, *custom])
+def registry_names(registry: ExpressionRegistry) -> set[str]:
+    return set(registry.functions) | set(registry.context_functions)
+
+
+def merge_expression_registries(registries: list[ExpressionRegistry]) -> ExpressionRegistry:
+    merged = ExpressionRegistry(functions={}, context_functions={})
+
+    for registry in registries:
+        local_duplicates = sorted(set(registry.functions).intersection(registry.context_functions))
+
+        if local_duplicates:
+            raise ProjectConfigError(f"duplicate YAML function name(s): {', '.join(local_duplicates)}")
+
+        duplicates = sorted(registry_names(merged).intersection(registry_names(registry)))
+
+        if duplicates:
+            raise ProjectConfigError(f"duplicate YAML function name(s): {', '.join(duplicates)}")
+
+        merged = ExpressionRegistry(
+            functions={**dict(merged.functions), **dict(registry.functions)},
+            context_functions={**dict(merged.context_functions), **dict(registry.context_functions)},
+        )
+
+    return merged
+
+
+def normalize_expression_registry(
+    registry: Mapping[str, ExpressionFunction] | ExpressionRegistry | None,
+) -> ExpressionRegistry:
+    if registry is None:
+        return ExpressionRegistry(
+            functions=YAML_FUNCTIONS,
+            context_functions=YAML_CONTEXT_FUNCTIONS,
+        )
+
+    if isinstance(registry, ExpressionRegistry):
+        return registry
+
+    return ExpressionRegistry(functions=registry, context_functions={})
+
+
+def expression_registry(project: ProjectPaths) -> ExpressionRegistry:
+    resolved_project = project
+    custom = [module_expression_registry(path) for path in resolved_project.python_modules]
+    return merge_expression_registries(
+        [
+            ExpressionRegistry(
+                functions=YAML_FUNCTIONS,
+                context_functions=YAML_CONTEXT_FUNCTIONS,
+            ),
+            *custom,
+        ]
+    )
 
 
 def expression_child_path(path: str, key: Any) -> str:
@@ -147,23 +187,39 @@ def make_expression_environment() -> Environment:
 
 def call_expression_function(
     value: str,
-    registry: Mapping[str, ExpressionFunction],
+    registry: ExpressionRegistry,
     path: str,
+    context: ExpressionContext | None = None,
 ) -> Any:
     name = value.removeprefix(PYTHON_EXPRESSION_PREFIX).strip()
 
     if not name:
         raise ExpressionResolutionError(f"{path or 'value'}: missing YAML function name")
 
-    function = registry.get(name)
+    function = registry.functions.get(name)
 
-    if function is None:
+    if function is not None:
+        try:
+            return copy_value(function())
+        except Exception as exc:
+            raise ExpressionResolutionError(
+                f"{path or 'value'}: YAML function {name!r} failed: {exc}"
+            ) from exc
+
+    context_function = registry.context_functions.get(name)
+
+    if context_function is None:
         raise ExpressionResolutionError(
             f"{path or 'value'}: unknown YAML function {name!r}"
         )
 
+    if context is None:
+        raise ExpressionResolutionError(
+            f"{path or 'value'}: YAML context function {name!r} requires page context"
+        )
+
     try:
-        return copy_value(function())
+        return copy_value(context_function(context))
     except Exception as exc:
         raise ExpressionResolutionError(
             f"{path or 'value'}: YAML function {name!r} failed: {exc}"
@@ -211,8 +267,9 @@ def resolve_env_references(value: Any, path: str = "") -> Any:
 
 def resolve_python_function_calls(
     value: Any,
-    registry: Mapping[str, ExpressionFunction],
+    registry: ExpressionRegistry,
     path: str = "",
+    context: ExpressionContext | None = None,
 ) -> Any:
     if isinstance(value, Mapping):
         return {
@@ -220,6 +277,7 @@ def resolve_python_function_calls(
                 item,
                 registry,
                 expression_child_path(path, key),
+                context,
             )
             for key, item in value.items()
         }
@@ -230,6 +288,7 @@ def resolve_python_function_calls(
                 item,
                 registry,
                 expression_index_path(path, index),
+                context,
             )
             for index, item in enumerate(value)
         ]
@@ -240,12 +299,13 @@ def resolve_python_function_calls(
                 item,
                 registry,
                 expression_index_path(path, index),
+                context,
             )
             for index, item in enumerate(value)
         )
 
     if isinstance(value, str) and value.strip().startswith(PYTHON_EXPRESSION_PREFIX):
-        return call_expression_function(value.strip(), registry, path)
+        return call_expression_function(value.strip(), registry, path, context)
 
     return copy_value(value)
 
@@ -299,10 +359,11 @@ def resolve_template_strings(
 def resolve_yaml_expressions(
     value: Any,
     *,
-    registry: Mapping[str, ExpressionFunction] | None = None,
+    registry: Mapping[str, ExpressionFunction] | ExpressionRegistry | None = None,
     path: str = "value",
+    context: ExpressionContext | None = None,
 ) -> Any:
-    value_resolved = resolve_yaml_expression_values(value, registry=registry, path=path)
+    value_resolved = resolve_yaml_expression_values(value, registry=registry, path=path, context=context)
     template_context = value_resolved if isinstance(value_resolved, Mapping) else {}
     return resolve_template_strings(value_resolved, template_context, path)
 
@@ -310,12 +371,42 @@ def resolve_yaml_expressions(
 def resolve_yaml_expression_values(
     value: Any,
     *,
-    registry: Mapping[str, ExpressionFunction] | None = None,
+    registry: Mapping[str, ExpressionFunction] | ExpressionRegistry | None = None,
     path: str = "value",
+    context: ExpressionContext | None = None,
 ) -> Any:
-    functions = YAML_FUNCTIONS if registry is None else registry
-    function_resolved = resolve_python_function_calls(value, functions, path)
+    functions = normalize_expression_registry(registry)
+    function_resolved = resolve_python_function_calls(value, functions, path, context)
     return resolve_env_references(function_resolved, path)
+
+
+def freeze_expression_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({
+            key: freeze_expression_value(item)
+            for key, item in value.items()
+        })
+
+    if isinstance(value, list | tuple):
+        return tuple(freeze_expression_value(item) for item in value)
+
+    if isinstance(value, set | frozenset):
+        return frozenset(freeze_expression_value(item) for item in value)
+
+    return copy_value(value)
+
+
+def expression_context(context: PageContext, project: ProjectPaths) -> ExpressionContext:
+    return ExpressionContext(
+        project=project,
+        route=context.route,
+        source_file=context.source_chain[-1] if context.source_chain else None,
+        source_chain=context.source_chain,
+        data=freeze_expression_value(context.data),
+        site=freeze_expression_value(context.data.get("site") or {}),
+        slots=freeze_expression_value(context.slots),
+        article=str(context.slots.get("article") or ""),
+    )
 
 
 def format_signal_line(value: Any) -> Any:
@@ -335,34 +426,47 @@ def normalize_resolved_site_fields(site: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
+def normalize_resolved_page_fields(data: Mapping[str, Any]) -> dict[str, Any]:
+    parsed_date = parse_date(data.get("date"))
+    normalized = (
+        deep_merge(data, {"date": parsed_date})
+        if parsed_date
+        else copy_value(data)
+    )
+
+    return (
+        deep_merge(
+            normalized,
+            {"site": normalize_resolved_site_fields(normalized["site"])},
+        )
+        if isinstance(normalized.get("site"), Mapping)
+        else normalized
+    )
+
+
 def resolve_site_expressions(
     site: Mapping[str, Any],
     *,
-    registry: Mapping[str, ExpressionFunction] | None = None,
+    registry: Mapping[str, ExpressionFunction] | ExpressionRegistry | None = None,
 ) -> dict[str, Any]:
     resolved = resolve_yaml_expressions({"site": site}, registry=registry, path="")
-    return normalize_resolved_site_fields(mapping_value(resolved.get("site")))
+    return normalize_resolved_site_fields(mapping(resolved.get("site"), "site"))
 
 
 def resolve_page_context_expressions(
     context: PageContext,
     *,
-    registry: Mapping[str, ExpressionFunction] | None = None,
+    project: ProjectPaths | None = None,
+    registry: Mapping[str, ExpressionFunction] | ExpressionRegistry | None = None,
 ) -> PageContext:
+    page_context = expression_context(context, project) if project is not None else None
     resolved_data = resolve_yaml_expressions(
         context.data,
         registry=registry,
         path=f"page:{context.route.url_path}",
+        context=page_context,
     )
-    data = (
-        deep_merge(
-            resolved_data,
-            {"site": normalize_resolved_site_fields(resolved_data["site"])},
-        )
-        if isinstance(resolved_data, Mapping)
-        and isinstance(resolved_data.get("site"), Mapping)
-        else resolved_data
-    )
+    data = normalize_resolved_page_fields(resolved_data) if isinstance(resolved_data, Mapping) else resolved_data
 
     return PageContext(
         route=context.route,

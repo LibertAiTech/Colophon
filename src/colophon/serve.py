@@ -13,16 +13,21 @@ import time
 from pathlib import Path
 
 from .build import build_site
+from .errors import ColophonError
 from .models import ProjectPaths
-from .project import project_or_default
 
 
-def snapshot_inputs(project: ProjectPaths | None = None) -> dict[str, tuple[int, int]]:
-    resolved_project = project_or_default(project)
+def snapshot_inputs(project: ProjectPaths) -> dict[str, tuple[int, int]]:
+    resolved_project = project
     snapshot: dict[str, tuple[int, int]] = {}
 
     def add(path: Path) -> None:
-        if not path.exists() or path.name.startswith(".") or "__pycache__" in path.parts or not path.is_file():
+        if (
+            not path.exists()
+            or path.name.startswith(".")
+            or "__pycache__" in path.parts
+            or not path.is_file()
+        ):
             return
 
         try:
@@ -43,8 +48,8 @@ def snapshot_inputs(project: ProjectPaths | None = None) -> dict[str, tuple[int,
     return snapshot
 
 
-def watch_and_rebuild(project: ProjectPaths | None = None, interval: float = 0.4) -> None:
-    resolved_project = project_or_default(project)
+def watch_and_rebuild(project: ProjectPaths, interval: float = 0.4) -> None:
+    resolved_project = project
     previous = snapshot_inputs(resolved_project)
 
     while True:
@@ -66,9 +71,19 @@ def watch_and_rebuild(project: ProjectPaths | None = None, interval: float = 0.4
             print(f"change detected: {pretty}")
 
         try:
-            build_site(resolved_project)
-            print(f"rebuilt {resolved_project.output_dir.name}/ at {dt.datetime.now().strftime('%H:%M:%S')}")
+            result = build_site(resolved_project)
+            page_count = sum(
+                result.counts.get(key, 0)
+                for key in ("pages", "posts", "archive_pages", "tag_pages", "feeds")
+            )
+            print(
+                f"rebuilt {resolved_project.output_dir.name}/ with "
+                f"{page_count} output page(s) at {dt.datetime.now().strftime('%H:%M:%S')}"
+            )
             previous = snapshot_inputs(resolved_project)
+        except ColophonError as exc:
+            print(f"build failed ({exc.category}): {exc}")
+            previous = current
         except Exception as exc:
             print(f"build failed: {exc}")
             previous = current
@@ -77,11 +92,11 @@ def watch_and_rebuild(project: ProjectPaths | None = None, interval: float = 0.4
 def serve_site(
     port: int,
     *,
-    project: ProjectPaths | None = None,
+    project: ProjectPaths,
     watch: bool = False,
     test: bool = False,
 ) -> None:
-    resolved_project = project_or_default(project)
+    resolved_project = project
     import http.server
     import socketserver
 
@@ -97,7 +112,10 @@ def serve_site(
 
     if watch:
         threading.Thread(target=watch_and_rebuild, args=(resolved_project,), daemon=True).start()
-        print(f"watching {resolved_project.content_dir}, {resolved_project.templates_dir}, and {resolved_project.static_dir}")
+        print(
+            f"watching {resolved_project.content_dir}, "
+            f"{resolved_project.templates_dir}, and {resolved_project.static_dir}"
+        )
 
     with Server(("", port), handler) as httpd:
         print(f"serving {resolved_project.output_dir}/ at http://localhost:{port}")

@@ -1,6 +1,6 @@
 ---
 title: Images
-summary: Examples of generated image variants, direct static assets, and placeholders.
+summary: Examples of generated image variants and direct static assets.
 image_examples:
   - title: Generated logical image
     image: demo_card
@@ -13,9 +13,6 @@ image_examples:
   - title: Direct static asset
     image: /assets/demo.svg
     text: Resolves a file copied directly from static/assets/demo.svg.
-  - title: Missing placeholder
-    image: missing_demo
-    text: The file is intentionally absent, so image() returns a placeholder object instead of failing the build.
 ---
 
 ## Logical images

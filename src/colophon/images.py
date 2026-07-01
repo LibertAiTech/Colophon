@@ -1,7 +1,7 @@
 """Image configuration, asset copying, and derivative generation.
 
 Image definitions and page references flow into a Jinja ``image()`` resolver that
-returns placeholders, direct assets, or generated resized derivatives.
+returns direct assets or generated resized derivatives.
 """
 
 from __future__ import annotations
@@ -14,10 +14,10 @@ from typing import Any
 
 from slugify import slugify
 
+from .errors import AssetError
 from .expressions import expression_registry, resolve_yaml_expression_values
 from .models import ProjectPaths, RenderJob
-from .project import project_or_default
-from .utils import copy_value, deep_merge, load_wrapped_yaml, mapping_value
+from .utils import copy_value, deep_merge, load_wrapped_yaml, mapping
 
 from PIL import Image, ImageFilter, ImageOps
 
@@ -41,26 +41,45 @@ AUTO_CROP_SAMPLE_EDGE = 96
 AUTO_CROP_MIN_MEAN_SIGNAL = 1.0
 
 
-def load_images(project: ProjectPaths | None = None) -> dict[str, Any]:
-    resolved_project = project_or_default(project)
-    return mapping_value(
+def load_images(project: ProjectPaths) -> dict[str, Any]:
+    resolved_project = project
+    return mapping(
         resolve_yaml_expression_values(
             load_wrapped_yaml(list(resolved_project.image_configs), unwrap="images"),
             registry=expression_registry(resolved_project),
             path="images",
-        )
+        ),
+        "images",
     )
 
 
-def copy_content_images(project: ProjectPaths | None = None) -> None:
-    resolved_project = project_or_default(project)
+def copy_content_images(project: ProjectPaths) -> tuple[tuple[Path, Path], ...]:
+    resolved_project = project
 
-    if resolved_project.content_images_dir.exists():
-        shutil.copytree(resolved_project.content_images_dir, resolved_project.output_dir / "images", dirs_exist_ok=True)
+    if not resolved_project.content_images_dir.exists():
+        return ()
+
+    copied: list[tuple[Path, Path]] = []
+
+    for source in sorted(resolved_project.content_images_dir.rglob("*")):
+        if not source.is_file():
+            continue
+
+        destination = resolved_project.output_dir / "images" / source.relative_to(resolved_project.content_images_dir)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        copied.append((source, destination))
+
+    return tuple(copied)
 
 
-def copy_referenced_assets(render_jobs: list[RenderJob], project: ProjectPaths | None = None) -> None:
-    resolved_project = project_or_default(project)
+def copy_referenced_assets(
+    render_jobs: list[RenderJob],
+    project: ProjectPaths,
+) -> tuple[tuple[tuple[Path, Path], ...], tuple[str, ...]]:
+    resolved_project = project
+    copied: list[tuple[Path, Path]] = []
+    skipped: list[str] = []
 
     for asset in sorted({asset for job in render_jobs for asset in job.page_context.assets}):
         source = resolved_project.content_dir / asset
@@ -69,10 +88,15 @@ def copy_referenced_assets(render_jobs: list[RenderJob], project: ProjectPaths |
         if source.exists() and source.is_file():
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
+            copied.append((source, destination))
+        else:
+            skipped.append(asset)
+
+    return tuple(copied), tuple(skipped)
 
 
-def direct_image_source(path_or_url: str, project: ProjectPaths | None = None) -> Path | None:
-    resolved_project = project_or_default(project)
+def direct_image_source(path_or_url: str, project: ProjectPaths) -> Path | None:
+    resolved_project = project
 
     if path_or_url.startswith("/images/"):
         return resolved_project.content_dir / path_or_url.lstrip("/")
@@ -250,9 +274,9 @@ def generated_image_path(
     width: int,
     height: int,
     suffix: str,
-    project: ProjectPaths | None = None,
+    project: ProjectPaths,
 ) -> Path:
-    resolved_project = project_or_default(project)
+    resolved_project = project
     variant_part = variant or "base"
     filename = f"{slugify(key)}-{slugify(variant_part)}-{width}x{height}{suffix.lower()}"
     return resolved_project.output_dir / "images" / "generated" / filename
@@ -263,7 +287,7 @@ def ensure_generated_image(
     key: str,
     variant: str | None,
     image_data: Mapping[str, Any],
-    project: ProjectPaths | None = None,
+    project: ProjectPaths,
 ) -> tuple[str, int, int, str]:
     natural = image_size(source) or (1200, 630)
     width = int(image_data.get("width") or natural[0])
@@ -272,39 +296,18 @@ def ensure_generated_image(
     destination = generated_image_path(key, variant, width, height, source.suffix, project)
 
     if not destination.exists() or destination.stat().st_mtime_ns < source.stat().st_mtime_ns:
-        result = resized_image(
-            source,
-            (width, height),
-            str(image_data.get("fit") or "cover"),
-            position,
-        )
-        save_image(result, destination, int(image_data.get("quality") or 85))
+        try:
+            result = resized_image(
+                source,
+                (width, height),
+                str(image_data.get("fit") or "cover"),
+                position,
+            )
+            save_image(result, destination, int(image_data.get("quality") or 85))
+        except Exception as exc:
+            raise AssetError(f"failed to generate image {key!r} from {source}: {exc}") from exc
 
     return f"/images/generated/{destination.name}", width, height, position
-
-
-def image_placeholder(key: str, image_data: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    data = image_data or {}
-    width = int(data.get("width") or 1200)
-    height = int(data.get("height") or 630)
-    label = str(data.get("label") or key.replace("_", " "))
-    size = str(data.get("size") or f"{width}x{height}")
-
-    return {
-        "exists": False,
-        "key": key,
-        "url": "",
-        "alt": str(data.get("alt") or ""),
-        "class": str(data.get("class") or ""),
-        "width": width,
-        "height": height,
-        "fit": str(data.get("fit") or "cover"),
-        "position": str(data.get("position") or "50% 50%"),
-        "ratio": f"{width}; --h: {height}",
-        "label": label,
-        "size": size,
-        "fallback": copy_value(data.get("fallback") or {}),
-    }
 
 
 def image_result(
@@ -358,7 +361,7 @@ def normalize_image_data(item: Mapping[str, Any], variant: str | None) -> dict[s
     return deep_merge(DEFAULT_IMAGE, deep_merge(base, variant_data if isinstance(variant_data, Mapping) else {}))
 
 
-def direct_image(name_or_path: str, project: ProjectPaths | None = None) -> dict[str, Any]:
+def direct_image(name_or_path: str, project: ProjectPaths) -> dict[str, Any]:
     source = direct_image_source(name_or_path, project)
 
     if is_external_url(name_or_path):
@@ -371,21 +374,21 @@ def direct_image(name_or_path: str, project: ProjectPaths | None = None) -> dict
         )
 
     if source is None:
-        return image_placeholder(name_or_path)
+        raise AssetError(f"image path must be a configured logical image or /images/ or /assets/ path: {name_or_path!r}")
 
     if not source.exists():
-        return image_placeholder(name_or_path)
+        raise AssetError(f"missing image asset: {name_or_path} -> {source}")
 
     natural = image_size(source) or (1200, 630)
     return image_result(name_or_path, name_or_path, DEFAULT_IMAGE, natural[0], natural[1])
 
 
-def make_image_resolver(images: Mapping[str, Any], project: ProjectPaths | None = None):
-    resolved_project = project_or_default(project)
+def make_image_resolver(images: Mapping[str, Any], project: ProjectPaths):
+    resolved_project = project
 
     def resolve_image(name_or_path: Any = None, variant: str | None = None, post: Any = None) -> dict[str, Any]:
         if not name_or_path:
-            return image_placeholder("image")
+            raise AssetError("image() requires a logical image key or direct image path")
 
         image_key = image_key_for(name_or_path, post)
 
@@ -395,14 +398,17 @@ def make_image_resolver(images: Mapping[str, Any], project: ProjectPaths | None 
         item = images.get(image_key)
 
         if not isinstance(item, Mapping):
-            return image_placeholder(image_key)
+            raise AssetError(f"configured image not found: {image_key}")
 
         image_data = normalize_image_data(item, variant)
         filename = str(image_data.get("file") or "")
         source = resolved_project.content_images_dir / filename if filename else Path()
 
-        if not filename or not source.exists():
-            return image_placeholder(image_key, image_data)
+        if not filename:
+            raise AssetError(f"configured image {image_key!r} must include a file")
+
+        if not source.exists():
+            raise AssetError(f"missing configured image asset: {image_key} -> {source}")
 
         url, width, height, position = ensure_generated_image(source, image_key, variant, image_data, resolved_project)
         return image_result(image_key, url, image_data, width, height, position)

@@ -14,16 +14,14 @@ from typing import Any
 from colophon.build import build_contexts, build_site
 from colophon.content import load_post_sidebar, load_site_config, scan_content_tree
 from colophon.deploy.config import load_deploy_config, redact_secrets
-from colophon.deploy.mastodon import mastodon_status_url, normalize_deploy_mastodon, post_mastodon_status, render_mastodon_post_text, select_deploy_post, source_mastodon_status_url, write_source_mastodon_status_url
+from colophon.deploy.mastodon import load_deploy_mastodon, mastodon_status_url, post_mastodon_status, render_mastodon_post_text, select_deploy_post, source_mastodon_status_url, write_source_mastodon_status_url
 from colophon.deploy.transports import TRANSPORT_UPLOADERS, upload_site_directory
 from colophon.errors import DeployConfigError, DeployError
 from colophon.models import DeployState, MastodonPoster, PageContext, ProjectPaths, SiteConfig, TransportUploader
-from colophon.project import project_or_default
-from colophon.utils import mapping_value
 
 
-def load_deploy_contexts(project: ProjectPaths | None = None) -> tuple[SiteConfig, list[PageContext]]:
-    resolved_project = project_or_default(project)
+def load_deploy_contexts(project: ProjectPaths) -> tuple[SiteConfig, list[PageContext]]:
+    resolved_project = project
     site_config = load_site_config(resolved_project)
     content_index = scan_content_tree(resolved_project.content_dir)
     post_sidebar = load_post_sidebar(resolved_project)
@@ -68,7 +66,7 @@ def deploy_step_mastodon_post(state: DeployState) -> DeployState:
         return replace(state, status_url=existing_status_url, posted=False)
 
     site = state.site_config.data["site"]
-    mastodon = normalize_deploy_mastodon(mapping_value(state.config.get("mastodon")), site)
+    mastodon = load_deploy_mastodon(state.config["mastodon"], site)
     status_text = render_mastodon_post_text(mastodon, selection, site)
     payload = state.mastodon_poster(mastodon, status_text, state.dry_run)
     status_url = mastodon_status_url(payload)
@@ -126,10 +124,10 @@ def deploy_step_build(state: DeployState) -> DeployState:
 def deploy_step_upload(state: DeployState) -> DeployState:
     actions = upload_site_directory(
         state.target_config,
-        state.project.output_dir,
-        state.dry_run,
-        state.transport_uploaders,
         state.project,
+        source_dir=state.project.output_dir,
+        dry_run=state.dry_run,
+        uploaders=state.transport_uploaders,
     )
 
     for action in actions:
@@ -157,7 +155,7 @@ def run_deploy_steps(state: DeployState) -> DeployState:
 
 
 def deploy_site(
-    project: ProjectPaths | None = None,
+    project: ProjectPaths,
     config_path: Path | None = None,
     target: str | None = None,
     post_id: str | None = None,
@@ -166,10 +164,10 @@ def deploy_site(
     mastodon_poster: MastodonPoster = post_mastodon_status,
     transport_uploaders: Mapping[str, TransportUploader] | None = None,
 ) -> dict[str, Any]:
-    resolved_project = project_or_default(project)
-    config = load_deploy_config(config_path, resolved_project)
+    resolved_project = project
+    config = load_deploy_config(resolved_project, config_path)
     target_name = target or str(config.get("default_target"))
-    target_config = mapping_value(config["targets"].get(target_name))
+    target_config = config["targets"].get(target_name)
 
     if not target_config:
         raise DeployConfigError(f"unknown deploy target {target_name!r}")

@@ -6,13 +6,12 @@ deploy state through the pipeline instead of mutating global state.
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
-
-
-ExpressionFunction = Callable[[], Any]
 
 
 MastodonPoster = Callable[[Mapping[str, Any], str, bool], dict[str, Any]]
@@ -60,6 +59,129 @@ class ProjectPaths:
     vendor: VendorConfig = field(default_factory=VendorConfig)
 
 
+def serializable_value(value: Any) -> Any:
+    if isinstance(value, Path):
+        return value.as_posix()
+
+    if isinstance(value, dt.datetime):
+        return value.isoformat()
+
+    if is_dataclass(value):
+        return {
+            item.name: serializable_value(getattr(value, item.name))
+            for item in fields(value)
+        }
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): serializable_value(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, tuple | list):
+        return [serializable_value(item) for item in value]
+
+    if isinstance(value, frozenset | set):
+        return [serializable_value(item) for item in sorted(value, key=str)]
+
+    return value
+
+
+@dataclass(frozen=True)
+class BuildOptions:
+    manifest_path: Path | str | None = None
+    build_time: dt.datetime | str | int | float | None = None
+    atomic: bool = True
+
+
+@dataclass(frozen=True)
+class BuildMessage:
+    level: str
+    category: str
+    message: str
+    path: str | None = None
+    detail: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return serializable_value(self)
+
+
+@dataclass(frozen=True)
+class ManifestEntry:
+    kind: str
+    output_path: str
+    source_path: str | None = None
+    url_path: str | None = None
+    route: str | None = None
+    template: str | None = None
+    source_chain: tuple[str, ...] = ()
+    size: int = 0
+    sha256: str = ""
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return serializable_value(self)
+
+
+@dataclass(frozen=True)
+class BuildManifest:
+    schema_version: str
+    colophon_version: str
+    project_root: str
+    output_dir: str
+    build_time: str
+    pages: tuple[ManifestEntry, ...] = ()
+    posts: tuple[ManifestEntry, ...] = ()
+    archive_pages: tuple[ManifestEntry, ...] = ()
+    tag_pages: tuple[ManifestEntry, ...] = ()
+    feeds: tuple[ManifestEntry, ...] = ()
+    static_assets: tuple[ManifestEntry, ...] = ()
+    content_assets: tuple[ManifestEntry, ...] = ()
+    generated_images: tuple[ManifestEntry, ...] = ()
+    copied_files: tuple[ManifestEntry, ...] = ()
+    skipped_files: tuple[ManifestEntry, ...] = ()
+    warnings: tuple[BuildMessage, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return serializable_value(self)
+
+
+@dataclass(frozen=True)
+class BuildResult:
+    project: ProjectPaths
+    output_dir: Path
+    manifest: BuildManifest
+    warnings: tuple[BuildMessage, ...] = ()
+    duration_seconds: float = 0.0
+    counts: Mapping[str, int] = field(default_factory=dict)
+    manifest_path: Path | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "project_root": self.project.root.as_posix(),
+            "output_dir": self.output_dir.as_posix(),
+            "manifest": self.manifest.to_dict(),
+            "warnings": [warning.to_dict() for warning in self.warnings],
+            "duration_seconds": self.duration_seconds,
+            "counts": dict(self.counts),
+            "manifest_path": self.manifest_path.as_posix() if self.manifest_path else None,
+        }
+
+    def write_manifest(self, path: Path | str | None = None) -> Path:
+        target = Path(path or self.manifest_path) if path or self.manifest_path else None
+
+        if target is None:
+            raise ValueError("manifest path is required")
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(self.manifest.to_dict(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return target
+
+
 @dataclass(frozen=True)
 class SiteConfig:
     data: dict[str, Any]
@@ -77,6 +199,24 @@ class SourceFile:
     absolute_path: Path
     content_path: str
     kind: str
+
+
+@dataclass(frozen=True)
+class ExpressionContext:
+    project: ProjectPaths
+    route: "Route"
+    source_file: SourceFile | None
+    source_chain: tuple[SourceFile, ...]
+    data: Mapping[str, Any]
+    site: Mapping[str, Any]
+    slots: Mapping[str, Any]
+    article: str
+
+
+ExpressionFunction = Callable[[], Any]
+
+
+ExpressionContextFunction = Callable[[ExpressionContext], Any]
 
 
 @dataclass(frozen=True)

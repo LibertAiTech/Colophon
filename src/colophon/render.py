@@ -11,13 +11,13 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from jinja2 import Environment, FileSystemLoader, pass_context, select_autoescape
+from jinja2 import Environment, FileSystemLoader, TemplateError, pass_context, select_autoescape
 from slugify import slugify
 
 from .collections import sorted_pages
+from .errors import TemplateBuildError
 from .models import PageContext, ProjectPaths, RenderJob, Route, SiteConfig
-from .project import project_or_default
-from .utils import bool_value, deep_merge, mapping_value, public_url
+from .utils import deep_merge, public_url
 from .vendor import vendor_url_for
 
 
@@ -41,11 +41,11 @@ def date_filter(value: Any, fmt: str = "%B %-d, %Y") -> str:
 def make_environment(
     site: Mapping[str, Any],
     image_resolver: Any,
-    project: ProjectPaths | None = None,
+    project: ProjectPaths,
     *,
     vendor_assets: Iterable[str] = (),
 ) -> Environment:
-    resolved_project = project_or_default(project)
+    resolved_project = project
     active_vendor_assets = tuple(vendor_assets)
     env = Environment(
         loader=FileSystemLoader(resolved_project.templates_dir),
@@ -68,12 +68,12 @@ def make_environment(
 
 
 def page_uses_mastodon_timeline(context: Mapping[str, Any]) -> bool:
-    mastodon = mapping_value(context.get("site", {}).get("mastodon"))
-    timeline = mapping_value(mastodon.get("timeline"))
-    sidebar = mapping_value(context.get("sidebar"))
-    cards = sidebar.get("cards") if isinstance(sidebar.get("cards"), list) else []
+    mastodon = (context.get("site") or {}).get("mastodon") or {}
+    timeline = mastodon.get("timeline") or {}
+    sidebar = context.get("sidebar") or {}
+    cards = sidebar.get("cards") or ()
 
-    return bool_value(timeline.get("enabled")) and any(
+    return timeline.get("enabled") is True and any(
         isinstance(card, Mapping) and card.get("type") == "mastodon_timeline"
         for card in cards
     )
@@ -125,8 +125,8 @@ def select_template(route: Route, page_context: PageContext, site_config: SiteCo
     return site_config.templates.get(str(template_name), str(template_name))
 
 
-def route_to_output_path(route: Route, project: ProjectPaths | None = None) -> Path:
-    resolved_project = project_or_default(project)
+def route_to_output_path(route: Route, project: ProjectPaths) -> Path:
+    resolved_project = project
     return (
         resolved_project.output_dir / "index.html"
         if route.url_path == "/"
@@ -135,7 +135,16 @@ def route_to_output_path(route: Route, project: ProjectPaths | None = None) -> P
 
 
 def render_template(env: Environment, render_job: RenderJob) -> None:
-    html = env.get_template(render_job.template_file).render(context_for_template(render_job.page_context))
+    try:
+        html = env.get_template(render_job.template_file).render(
+            context_for_template(render_job.page_context)
+        )
+    except TemplateError as exc:
+        raise TemplateBuildError(
+            f"{render_job.route.url_path}: failed to render template "
+            f"{render_job.template_file!r}: {exc}"
+        ) from exc
+
     render_job.output_path.parent.mkdir(parents=True, exist_ok=True)
     render_job.output_path.write_text(html, encoding="utf-8")
 
@@ -154,31 +163,37 @@ def render_auxiliary_pages(
     env: Environment,
     site: Mapping[str, Any],
     post_summaries: list[dict[str, Any]],
-    project: ProjectPaths | None = None,
+    project: ProjectPaths,
+    *,
+    build_time: dt.datetime | None = None,
 ) -> None:
-    resolved_project = project_or_default(project)
+    resolved_project = project
     posts_by_date = sorted_pages(post_summaries, "date desc")
     tags = tag_groups(posts_by_date)
+    timestamp = build_time or dt.datetime.now(dt.UTC)
 
-    (resolved_project.output_dir / "archive").mkdir(parents=True, exist_ok=True)
-    (resolved_project.output_dir / "archive" / "index.html").write_text(
-        env.get_template("archive.html").render(site=site, posts=posts_by_date, tags=tags),
-        encoding="utf-8",
-    )
-
-    for tag, posts in sorted(tags.items()):
-        tag_dir = resolved_project.output_dir / "tags" / slugify(tag)
-        tag_dir.mkdir(parents=True, exist_ok=True)
-        (tag_dir / "index.html").write_text(
-            env.get_template("tag.html").render(site=site, tag=tag, posts=posts, tags=tags),
+    try:
+        (resolved_project.output_dir / "archive").mkdir(parents=True, exist_ok=True)
+        (resolved_project.output_dir / "archive" / "index.html").write_text(
+            env.get_template("archive.html").render(site=site, posts=posts_by_date, tags=tags),
             encoding="utf-8",
         )
 
-    (resolved_project.output_dir / "feed.xml").write_text(
-        env.get_template("feed.xml").render(
-            site=site,
-            posts=posts_by_date[:20],
-            build_date=dt.datetime.now(dt.UTC),
-        ),
-        encoding="utf-8",
-    )
+        for tag, posts in sorted(tags.items()):
+            tag_dir = resolved_project.output_dir / "tags" / slugify(tag)
+            tag_dir.mkdir(parents=True, exist_ok=True)
+            (tag_dir / "index.html").write_text(
+                env.get_template("tag.html").render(site=site, tag=tag, posts=posts, tags=tags),
+                encoding="utf-8",
+            )
+
+        (resolved_project.output_dir / "feed.xml").write_text(
+            env.get_template("feed.xml").render(
+                site=site,
+                posts=posts_by_date[:20],
+                build_date=timestamp,
+            ),
+            encoding="utf-8",
+        )
+    except TemplateError as exc:
+        raise TemplateBuildError(f"failed to render auxiliary template: {exc}") from exc
