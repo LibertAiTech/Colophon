@@ -1,23 +1,26 @@
 ---
 title: Custom Python hooks
-summary: Safe deterministic examples loaded from site_hooks.py.
-docs_links: python::demo_links
+summary: python::first_paragraph
+docs_links: python::blogroll_links
 hook_values:
-  status: python::demo_status
-  build_label: python::demo_build_label
+  build_revision: python::build_revision
+  last_updated: python::last_updated
+  read_time: python::read_time
+  first_paragraph: python::first_paragraph
+  site_stats: python::site_stats
+  recently_changed_pages: python::recently_changed_pages
   first_link: "{{ docs_links[0].label }}"
 ---
 
 ## Python module loading
 
-`colophon.yml` declares `site_hooks.py` under `python.modules`. During build, Colophon imports that trusted local module and reads its `YAML_FUNCTIONS` registry.
+`colophon.yml` declares `site_hooks.py` under `python.modules`. During build, Colophon imports that trusted local module and reads its `YAML_FUNCTIONS` and `YAML_CONTEXT_FUNCTIONS` registries.
 
 ## YAML usage
 
 ```yaml
-signal_line:
-  BUILD: python::demo_status
-  HOOK: python::demo_build_label
+summary: python::first_paragraph
+last_updated: python::last_updated
 ```
 
-Function results are copied before they are merged into page data. Duplicate names and missing functions fail with a path-aware error.
+Zero-argument hooks work in site config. Context hooks work in page/frontmatter data and receive the current route, source file, source chain, page data, site data, slots, and rendered article. Duplicate names and missing functions fail with a path-aware error.

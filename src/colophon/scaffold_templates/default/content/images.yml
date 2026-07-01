@@ -14,9 +14,3 @@ images:
       square:
         width: 240
         height: 240
-  missing_demo:
-    file: missing-demo.png
-    alt: A deliberate missing-image placeholder
-    label: Missing placeholder example
-    width: 640
-    height: 360

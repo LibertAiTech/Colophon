@@ -1,4 +1,4 @@
-"""Deploy configuration loading and normalization.
+"""Deploy configuration loading and validation.
 
 Raw deploy YAML flows through expression resolution, defaults, target validation,
 step validation, and secret redaction before pipeline execution.
@@ -11,10 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from colophon.errors import DeployConfigError
-from colophon.expressions import resolve_yaml_expression_values
+from colophon.expressions import expression_registry, resolve_yaml_expression_values
 from colophon.models import ProjectPaths
-from colophon.project import project_or_default
-from colophon.utils import bool_value, copy_value, deep_merge, mapping_value, read_yaml
+from colophon.utils import copy_value, deep_merge, mapping, read_yaml
 
 
 DEFAULT_DEPLOY_STEPS = [
@@ -65,71 +64,59 @@ DEFAULT_TRANSPORT_PORTS = {
 }
 
 
-def normalize_deploy_steps(value: Any) -> list[str]:
-    raw_steps = value if isinstance(value, list) else DEFAULT_DEPLOY_STEPS
-    steps = [str(step).strip() for step in raw_steps if str(step).strip()]
+def load_deploy_steps(value: Any) -> list[str]:
+    steps = list(value or DEFAULT_DEPLOY_STEPS)
     unknown = [step for step in steps if step not in DEFAULT_DEPLOY_STEPS]
 
     if unknown:
-        raise DeployConfigError(f"unknown deploy step(s): {', '.join(unknown)}")
+        raise DeployConfigError(f"unknown deploy step(s): {', '.join(map(str, unknown))}")
 
     return steps or copy_value(DEFAULT_DEPLOY_STEPS)
 
 
-def normalize_deploy_target(raw_target: Any) -> dict[str, Any]:
-    target = deep_merge(DEFAULT_DEPLOY_TARGET, mapping_value(raw_target))
-    transport = str(target.get("transport") or DEFAULT_DEPLOY_TARGET["transport"]).lower()
+def load_deploy_target(raw_target: Any, path: str) -> dict[str, Any]:
+    raw = mapping(raw_target, path, error=DeployConfigError)
+    target = deep_merge(DEFAULT_DEPLOY_TARGET, raw)
+    transport = str(target["transport"]).strip().lower()
 
     if transport not in DEFAULT_TRANSPORT_PORTS:
         raise DeployConfigError(f"unknown deploy transport {transport!r}")
 
-    try:
-        port = int(target.get("port") or DEFAULT_TRANSPORT_PORTS[transport])
-    except (TypeError, ValueError) as exc:
-        raise DeployConfigError(f"invalid deploy port {target.get('port')!r}") from exc
+    missing = [key for key in ("host", "username", "remote_path") if not target.get(key)]
+    if missing:
+        raise DeployConfigError(f"{path} missing required key(s): {', '.join(missing)}")
 
-    normalized = deep_merge(
+    return deep_merge(
         target,
         {
             "transport": transport,
-            "port": port,
-            "host": str(target.get("host") or "").strip(),
-            "username": str(target.get("username") or "").strip(),
-            "password": str(target.get("password") or ""),
-            "remote_path": str(target.get("remote_path") or "").strip(),
-            "purge": bool_value(target.get("purge"), True),
+            "port": target.get("port") or DEFAULT_TRANSPORT_PORTS[transport],
         },
     )
-    missing = [
-        key
-        for key in ("host", "username", "remote_path")
-        if not str(normalized.get(key) or "").strip()
-    ]
-
-    if missing:
-        raise DeployConfigError(f"deploy target missing required field(s): {', '.join(missing)}")
-
-    return normalized
 
 
-def normalize_deploy_config(raw_config: Any) -> dict[str, Any]:
-    raw = mapping_value(raw_config)
-    deploy = mapping_value(raw.get("deploy") if "deploy" in raw else raw)
-    resolved = resolve_yaml_expression_values(deploy, path="deploy")
+def validate_deploy_config(raw_config: Any, registry: Any = None) -> dict[str, Any]:
+    raw = mapping(raw_config, "deploy config", error=DeployConfigError)
+    if "deploy" not in raw:
+        raise DeployConfigError("deploy config must contain a top-level deploy mapping")
+
+    deploy = mapping(raw["deploy"], "deploy", error=DeployConfigError)
+    resolved = resolve_yaml_expression_values(deploy, registry=registry, path="deploy")
+    resolved = mapping(resolved, "deploy", error=DeployConfigError)
     base = deep_merge(
         DEFAULT_DEPLOY,
         {key: copy_value(value) for key, value in resolved.items() if key != "targets"},
     )
-    targets = mapping_value(resolved.get("targets"))
+    targets = mapping(resolved.get("targets"), "deploy.targets", error=DeployConfigError)
 
     if not targets:
         raise DeployConfigError("deploy.targets must contain at least one target")
 
     normalized_targets = {
-        str(name): normalize_deploy_target(target)
+        str(name).strip(): load_deploy_target(target, f"deploy.targets.{name}")
         for name, target in targets.items()
     }
-    default_target = str(base.get("default_target") or DEFAULT_DEPLOY["default_target"])
+    default_target = str(base.get("default_target") or DEFAULT_DEPLOY["default_target"]).strip()
 
     if default_target not in normalized_targets:
         raise DeployConfigError(f"default deploy target {default_target!r} is not configured")
@@ -138,11 +125,14 @@ def normalize_deploy_config(raw_config: Any) -> dict[str, Any]:
         base,
         {
             "default_target": default_target,
-            "steps": normalize_deploy_steps(base.get("steps")),
-            "post": deep_merge(DEFAULT_DEPLOY_POST, mapping_value(base.get("post"))),
+            "steps": load_deploy_steps(base.get("steps")),
+            "post": deep_merge(
+                DEFAULT_DEPLOY_POST,
+                mapping(base.get("post"), "deploy.post", error=DeployConfigError),
+            ),
             "mastodon": deep_merge(
                 DEFAULT_DEPLOY_MASTODON,
-                mapping_value(base.get("mastodon")),
+                mapping(base.get("mastodon"), "deploy.mastodon", error=DeployConfigError),
             ),
             "targets": normalized_targets,
         },
@@ -150,17 +140,17 @@ def normalize_deploy_config(raw_config: Any) -> dict[str, Any]:
 
 
 def load_deploy_config(
+    project: ProjectPaths,
     config_path: Path | None = None,
-    project: ProjectPaths | None = None,
 ) -> dict[str, Any]:
-    resolved_project = project_or_default(project)
+    resolved_project = project
     path = resolved_project.deploy_config if config_path is None else config_path
     raw = read_yaml(path)
 
     if not raw:
         raise DeployConfigError(f"missing deploy config: {path}")
 
-    return normalize_deploy_config(raw)
+    return validate_deploy_config(raw, registry=expression_registry(resolved_project))
 
 
 def redact_secrets(value: Any, parent_key: str = "") -> Any:

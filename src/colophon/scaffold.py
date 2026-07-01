@@ -15,10 +15,6 @@ from .errors import ProjectConfigError
 IGNORED_TEMPLATE_NAMES = frozenset({"_site", ".git", "__pycache__", ".DS_Store", ".venv"})
 
 
-def scaffold_files_root():
-    return resources.files("colophon").joinpath("scaffold_files")
-
-
 def scaffold_templates_root():
     return resources.files("colophon").joinpath("scaffold_templates")
 
@@ -28,9 +24,6 @@ def packaged_scaffold_root(template: str = "default"):
 
     if root.is_dir():
         return root
-
-    if template == "default":
-        return scaffold_files_root()
 
     raise ProjectConfigError(f"unknown scaffold template: {template}")
 

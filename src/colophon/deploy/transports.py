@@ -18,8 +18,6 @@ from typing import Any
 
 from colophon.errors import DeployConfigError, DeployError
 from colophon.models import ProjectPaths, TransportUploader
-from colophon.project import project_or_default
-from colophon.utils import bool_value
 
 
 def iter_site_files(source_dir: Path) -> list[tuple[Path, str]]:
@@ -47,10 +45,19 @@ def is_safe_remote_purge_path(remote_path: str) -> bool:
     return not (parts[0] in {"home", "users"} and len(parts) <= 2)
 
 
+def purge_enabled(target: Mapping[str, Any]) -> bool:
+    value = target.get("purge", True)
+
+    if not isinstance(value, bool):
+        raise DeployConfigError("deploy target purge must be a boolean")
+
+    return value
+
+
 def require_safe_remote_purge_path(target: Mapping[str, Any]) -> None:
     remote_path = str(target.get("remote_path") or "")
 
-    if bool_value(target.get("purge"), True) and not is_safe_remote_purge_path(remote_path):
+    if purge_enabled(target) and not is_safe_remote_purge_path(remote_path):
         raise DeployConfigError(f"refusing to purge unsafe remote path {remote_path!r}")
 
 
@@ -58,7 +65,7 @@ def planned_upload_actions(target: Mapping[str, Any], source_dir: Path) -> list[
     file_count = len(iter_site_files(source_dir))
     transport = str(target.get("transport") or "")
     remote = f"{transport}://{target.get('host')}/{target.get('remote_path')}"
-    purge = "purge then upload" if bool_value(target.get("purge"), True) else "upload"
+    purge = "purge then upload" if purge_enabled(target) else "upload"
     return [f"{purge} {file_count} file(s) to {remote}"]
 
 
@@ -136,7 +143,7 @@ def upload_with_ftp(target: Mapping[str, Any], source_dir: Path, dry_run: bool) 
 
         ftp.cwd(str(target["remote_path"]))
 
-        if bool_value(target.get("purge"), True):
+        if purge_enabled(target):
             purge_ftp_current_directory(ftp)
 
         upload_ftp_files(ftp, source_dir)
@@ -196,7 +203,7 @@ def upload_with_sftp(target: Mapping[str, Any], source_dir: Path, dry_run: bool)
     try:
         import paramiko
     except ImportError as exc:
-        raise DeployError("SFTP deploy requires paramiko>=3") from exc
+        raise DeployError("SFTP deploy requires the optional dependency: pip install 'colophon-site[sftp]'") from exc
 
     transport = paramiko.Transport((str(target["host"]), int(target["port"])))
     connect_kwargs = {"username": str(target["username"])}
@@ -208,7 +215,7 @@ def upload_with_sftp(target: Mapping[str, Any], source_dir: Path, dry_run: bool)
         transport.connect(**connect_kwargs)
         sftp = paramiko.SFTPClient.from_transport(transport)
 
-        if bool_value(target.get("purge"), True):
+        if purge_enabled(target):
             purge_sftp_directory(sftp, str(target["remote_path"]))
 
         upload_sftp_files(sftp, source_dir, str(target["remote_path"]))
@@ -250,7 +257,7 @@ def upload_with_sshfs(target: Mapping[str, Any], source_dir: Path, dry_run: bool
         )
 
         try:
-            if bool_value(target.get("purge"), True):
+            if purge_enabled(target):
                 purge_local_directory_contents(mount_point)
 
             copy_site_contents(source_dir, mount_point)
@@ -270,12 +277,12 @@ TRANSPORT_UPLOADERS: dict[str, TransportUploader] = {
 
 def upload_site_directory(
     target: Mapping[str, Any],
+    project: ProjectPaths,
     source_dir: Path | None = None,
     dry_run: bool = False,
     uploaders: Mapping[str, TransportUploader] | None = None,
-    project: ProjectPaths | None = None,
 ) -> list[str]:
-    resolved_project = project_or_default(project)
+    resolved_project = project
     resolved_source_dir = resolved_project.output_dir if source_dir is None else source_dir
     registry = TRANSPORT_UPLOADERS if uploaders is None else uploaders
     transport = str(target.get("transport") or "").lower()

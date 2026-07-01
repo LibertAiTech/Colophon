@@ -5,8 +5,7 @@ site:
   url: https://example.test
   author: Your Name
   signal_line:
-    BUILD: python::demo_status
-    HOOK: python::demo_build_label
+    REVISION: python::build_revision
     AUTHOR: "{{ site.author }}"
   nav:
     - label: Home
@@ -29,7 +28,7 @@ site:
     brand: Example Site
     links:
       - label: Colophon
-        href: https://github.com/your-org/colophon
+        href: https://github.com/AeonCypher/Colophon
       - label: RSS
         href: /feed.xml
       - label: Demo tag

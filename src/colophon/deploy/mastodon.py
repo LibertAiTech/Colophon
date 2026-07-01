@@ -21,9 +21,9 @@ from colophon.collections import is_post_context, should_list_page, summarize_pa
 from colophon.deploy.config import DEFAULT_DEPLOY_MASTODON
 from colophon.errors import DeployConfigError, DeployError
 from colophon.expressions import make_expression_environment
-from colophon.mastodon import normalize_mastodon_instance_url
+from colophon.mastodon import mastodon_instance_url
 from colophon.models import DeployPostSelection, PageContext, SourceFile
-from colophon.utils import deep_merge, mapping_value, public_url, read_yaml
+from colophon.utils import deep_merge, mapping, public_url, read_yaml
 
 
 def deploy_post_date(value: Any) -> dt.date:
@@ -133,12 +133,12 @@ def render_mastodon_post_text(
     return text
 
 
-def normalize_deploy_mastodon(
+def load_deploy_mastodon(
     mastodon: Mapping[str, Any],
     site: Mapping[str, Any],
 ) -> dict[str, Any]:
-    site_mastodon = mapping_value(site.get("mastodon"))
-    instance_url = normalize_mastodon_instance_url(
+    site_mastodon = site.get("mastodon") or {}
+    instance_url = mastodon_instance_url(
         mastodon.get("instance_url")
         or mastodon.get("host")
         or site_mastodon.get("instance_url")
@@ -168,7 +168,7 @@ def post_mastodon_status(
         return {"id": "dry-run", "url": "https://dry-run.invalid/@deploy/0"}
 
     token = str(mastodon.get("access_token") or "")
-    instance_url = normalize_mastodon_instance_url(mastodon.get("instance_url"))
+    instance_url = mastodon_instance_url(mastodon.get("instance_url"))
     body = urlencode({"status": status_text}).encode("utf-8")
     request = urllib.request.Request(
         f"{instance_url}/api/v1/statuses",
@@ -203,13 +203,14 @@ def load_source_metadata(source_file: SourceFile) -> dict[str, Any]:
 
 
 def mastodon_comments_status_url(raw_comments: Any) -> str:
-    if isinstance(raw_comments, str):
-        return raw_comments.strip()
+    if raw_comments is None:
+        return ""
 
-    if isinstance(raw_comments, Mapping):
-        return str(raw_comments.get("status_url") or raw_comments.get("statusUrl") or "").strip()
+    if isinstance(raw_comments, bool):
+        return ""
 
-    return ""
+    comments = mapping(raw_comments, "mastodon_comments", error=DeployConfigError)
+    return str(comments.get("status_url") or "").strip()
 
 
 def source_mastodon_status_url(source_file: SourceFile) -> str:
@@ -217,7 +218,11 @@ def source_mastodon_status_url(source_file: SourceFile) -> str:
 
 
 def comments_with_status_url(raw_comments: Any, status_url: str) -> dict[str, Any]:
-    comments = mapping_value(raw_comments)
+    comments = (
+        {"enabled": raw_comments}
+        if isinstance(raw_comments, bool)
+        else mapping(raw_comments, "mastodon_comments", error=DeployConfigError)
+    )
     defaults = {} if "enabled" in comments else {"enabled": True}
     return deep_merge(deep_merge(defaults, comments), {"status_url": status_url})
 

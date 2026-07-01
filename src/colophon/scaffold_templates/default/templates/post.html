@@ -20,8 +20,9 @@
       {% endif %}
     </header>
 
-    {% if cover_image|default('') %}
-      {% set cover = image(cover_image, 'thumb') %}
+    {% set cover_key = cover|default(cover_image|default('')) %}
+    {% if cover_key %}
+      {% set cover = image(cover_key, 'thumb') %}
       <figure class="media-frame">
         {% if cover.exists and cover.url %}
           <img src="{{ cover.url }}" alt="{{ cover.alt }}" width="{{ cover.width }}" height="{{ cover.height }}">

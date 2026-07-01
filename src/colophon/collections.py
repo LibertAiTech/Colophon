@@ -11,9 +11,9 @@ from collections.abc import Mapping
 from typing import Any
 
 from .expressions import resolve_page_context_expressions
-from .mastodon import normalize_mastodon_comments
-from .models import ExpressionFunction, PageContext
-from .utils import copy_value, deep_merge, mapping_value, normalize_route, route_parts
+from .mastodon import load_mastodon_comments
+from .models import ExpressionFunction, PageContext, ProjectPaths
+from .utils import copy_value, deep_merge, normalize_route, route_parts
 
 
 DEFAULT_COLLECTIONS = {
@@ -48,9 +48,10 @@ def summarize_page(context: PageContext) -> dict[str, Any]:
         "tags": data.get("tags") or [],
         "template": data.get("template") or context.template,
         "reading_minutes": data.get("reading_minutes"),
-        "cover_image": data.get("cover_image") or "",
+        "cover": data.get("cover") or data.get("cover_image") or "",
+        "cover_image": data.get("cover_image") or data.get("cover") or "",
         "sidebar_image": data.get("sidebar_image") or "",
-        "image": data.get("image") or data.get("cover_image") or "",
+        "image": data.get("image") or data.get("cover") or data.get("cover_image") or "",
         "data": copy_value(data),
     }
 
@@ -184,19 +185,20 @@ def enrich_post_context(
     context: PageContext,
     post_sidebar: Mapping[str, Any],
     post_summaries: list[dict[str, Any]],
+    project: ProjectPaths | None = None,
     registry: Mapping[str, ExpressionFunction] | None = None,
 ) -> PageContext:
     if not is_post_context(context):
         return context
 
     sidebar = context.data.get("sidebar") or copy_value(post_sidebar)
-    site_mastodon = mapping_value(context.data.get("site", {}).get("mastodon"))
+    site_mastodon = (context.data.get("site") or {}).get("mastodon") or {}
     data = deep_merge(
         context.data,
         {
             "sidebar": sidebar,
             "related": related_posts_for(context, post_summaries),
-            "mastodon_comments": normalize_mastodon_comments(
+            "mastodon_comments": load_mastodon_comments(
                 context.data.get("mastodon_comments"),
                 site_mastodon,
             ),
@@ -212,5 +214,6 @@ def enrich_post_context(
             template=context.template,
             source_chain=context.source_chain,
         ),
+        project=project,
         registry=registry,
     )

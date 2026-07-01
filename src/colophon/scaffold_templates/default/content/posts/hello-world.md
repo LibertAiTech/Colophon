@@ -1,17 +1,17 @@
 ---
 title: Hello world
 slug: hello-world
-date: 2026-01-01
-summary: The first generated post.
+date: python::get_date
+summary: python::first_paragraph
 tags:
   - demo
   - guide
 status: published
-cover_image: demo_card
+listed: true
+cover: demo_card
 related:
   - second-post
-mastodon_comments:
-  enabled: false
+mastodon_comments: true
 ---
 
 ## Hello

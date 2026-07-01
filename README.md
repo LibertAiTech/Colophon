@@ -1,495 +1,76 @@
 # Colophon
 
-Colophon is a small static site generator for content-driven sites. It reads YAML and Markdown content, renders Jinja templates, resolves trusted local Python hooks, creates image derivatives, builds archives/tags/RSS, serves with optional watch mode, and can run a config-driven deploy flow.
+Colophon is a content-first static site generator for YAML, Markdown, Jinja templates, trusted local Python hooks, image derivatives, RSS, Mastodon-aware pages, and config-driven deploys.
 
-## Quick Start
+Colophon will publish to PyPI as `colophon-site`. The Python package and primary CLI command remain `colophon`.
 
-Run the package from this repo during development:
+## Quickstart
+
+Install Colophon:
 
 ```bash
-cd colophon_repo
-PYTHONPATH=src .venv/bin/python -m colophon scaffold /private/tmp/colophon-demo --force
-PYTHONPATH=src .venv/bin/python -m colophon build --config /private/tmp/colophon-demo/colophon.yml
-PYTHONPATH=src .venv/bin/python -m colophon serve --config /private/tmp/colophon-demo/colophon.yml --watch --port 8000
+python -m pip install colophon-site
 ```
 
-After installing the package into an environment, use the console command directly:
+Until the first PyPI release is available, pin the GitHub release tag:
 
 ```bash
+python -m pip install git+https://github.com/AeonCypher/Colophon.git@v0.1.0
+```
+
+Create, build, and serve a site:
+
+```bash
+colophon scaffold ./my-site
+cd ./my-site
 colophon build --config colophon.yml
 colophon serve --config colophon.yml --watch --port 8000
-colophon vendor download --config colophon.yml
-colophon deploy --config colophon.yml --target production --dry-run
-colophon scaffold ./new-site
-colophon scaffold ./new-site --template default
-colophon scaffold ./new-site --template-dir ./my-scaffold-template
 ```
 
-Build the sibling `libertaitech` site while working in this split workspace:
+The `colophon-site` CLI alias is also installed:
 
 ```bash
-cd ../libertaitech
-PYTHONPATH=../colophon_repo/src ../colophon_repo/.venv/bin/python -m colophon build --config colophon.yml
+colophon-site build --config colophon.yml
 ```
 
-Run the framework test suite:
+SFTP deploy support is optional:
 
 ```bash
-cd ../colophon_repo
+python -m pip install 'colophon-site[sftp]'
+python -m pip install 'colophon-site[sftp] @ git+https://github.com/AeonCypher/Colophon.git@v0.1.0'
+```
+
+## Why Use Colophon?
+
+- Content-first authoring with Markdown, YAML pages, frontmatter, and Jinja templates.
+- Strict builds that fail early for bad config, missing images, unknown hooks, and unsafe deploy targets.
+- Trusted local Python hooks when static content needs computed values without a plugin system.
+- Static output for cheap hosting, with deploy recipes for FTP, FTPS, SFTP, and SSHFS.
+- Built-in support for image variants, archive/tag/feed pages, Mastodon comments, and Mastodon timelines.
+- No frontend bundler by default.
+
+## Documentation
+
+- [CLI guide](docs/cli.md): install variants, commands, common flags, JSON output, manifests, and dry-runs.
+- [Authorship guide](docs/authorship.md): Markdown, YAML pages, frontmatter, collections, YAML expressions, and author-facing Python hooks.
+- [Site design guide](docs/site-design.md): project layout, config, templates, routes, static assets, vendor assets, images, and template helpers.
+- [Publishing guide](docs/publishing.md): deploy config, provider recipes, Mastodon setup, feeds, archive/tag output, and repeatable builds.
+- [Python API guide](docs/python-api.md): embedded API, public facade, build results, manifests, deploy calls, and errors.
+- [Template reference](docs/template-reference.md): complete template globals, filters, object shapes, image fields, Mastodon fields, and stability notes.
+- [Reference](docs/reference.md): compatibility policy, config key reference, troubleshooting, release expectations, and support boundaries.
+- [Changelog](CHANGELOG.md): release notes and release checklist.
+- [Contributing](CONTRIBUTING.md): development setup, architecture, coding style, and tests.
+
+## Development
+
+Run commands from this repository root:
+
+```bash
 PYTHONPATH=src .venv/bin/python -m unittest discover -v
+PYTHONPATH=src .venv/bin/python -m colophon --help
 ```
 
-## Project Layout
+The package uses a `src/` layout. During local development, either install the package into the environment or set `PYTHONPATH=src`.
 
-A Colophon site is wired through `colophon.yml`. The generator does not need to live inside the site.
-
-```text
-my-site/
-  colophon.yml
-  site_hooks.py
-  content/
-    site.yaml
-    index.yml
-    images.yml
-    post-sidebar.yml
-    pages/about.md
-    posts/hello-world.md
-  templates/
-    base.html
-    index.html
-    post.html
-    simple.html
-    archive.html
-    tag.html
-    feed.xml
-  static/
-    styles.css
-    vendor/
-  _site/
-```
-
-`content/`, `templates/`, `static/`, and `_site/` are defaults. They can be changed in config or with CLI overrides.
-
-## `colophon.yml`
-
-The project config tells Colophon where the site lives and which local Python modules are trusted extension points.
-
-```yaml
-paths:
-  content: content
-  templates: templates
-  static: static
-  output: _site
-  deploy: content/deploy.yaml
-python:
-  modules:
-    - site_hooks.py
-vendor:
-  mode: auto
-  local_dir: vendor
-  assets:
-    webawesome:
-      enabled: false
-```
-
-Path values are resolved relative to the config file unless they are absolute. `paths.deploy` may also be named `deploy_config`.
-`vendor.mode` may be `auto`, `cdn`, or `local`; `auto` uses local files when present and CDN URLs otherwise.
-
-Every command accepts `--config`. Build and serve also accept quick path overrides:
-
-```bash
-colophon build --config colophon.yml --content draft-content --output _preview
-colophon serve --config colophon.yml --templates experimental-templates --port 8000
-```
-
-The loaded project is immutable during a build, so two independent site roots can build in the same Python process without monkeypatching global paths.
-
-## Content Files
-
-`content/site.yaml` defines site-wide data, template mapping, and route rules:
-
-```yaml
-site:
-  title: Example Site
-  description: A site generated by Colophon.
-  url: https://example.test
-  nav:
-    - label: Home
-      href: /
-
-templates:
-  default: index.html
-  page: index.html
-  post: post.html
-  static: simple.html
-
-routes:
-  - match: /posts/**
-    template: post
-  - match: /**
-    template: page
-```
-
-`content/index.yml` becomes `/`. YAML pages are useful for structured homepage data such as hero text, feature lists, sidebar cards, and collection definitions.
-
-`content/pages/about.md` becomes `/about/`. Files inside `content/pages/` route without the `pages` prefix, so `content/pages/docs/install.md` becomes `/docs/install/`.
-
-`content/posts/hello-world.md` becomes `/posts/hello-world/`. Posts use YAML front matter plus Markdown body:
-
-```markdown
----
-title: Hello world
-slug: hello-world
-date: 2026-01-01
-summary: The first post.
-tags:
-  - demo
-status: published
----
-
-## Heading
-
-Markdown body.
-```
-
-Support files do not create pages: `site.yaml`, `images.yml`, `post-sidebar.yml`, `deploy.yaml`, and files under `content/images/`.
-
-## Markdown and Page Data
-
-Markdown is rendered with support for headings, tables, strikethrough, task lists, definition lists, inline URLs, and inline HTML. Level-two headings become `toc` entries:
-
-```markdown
-## Install
-
-This heading appears in `toc`.
-```
-
-Markdown pages and posts receive defaults such as `title`, `slug`, `url`, `summary`, `tags`, `toc`, and `reading_minutes`. YAML front matter can override those values.
-
-Set `draft: true` or `listed: false` to keep a page out of collections, archives, tags, and feeds while still allowing it to render if it has a route.
-
-## Template Variables
-
-Templates receive the merged page data as top-level variables. Common values include:
-
-| Variable | Meaning |
-| --- | --- |
-| `site` | Data from `content/site.yaml` after defaults and expressions resolve. |
-| `title`, `summary`, `date`, `tags` | Page or post front matter and normalized defaults. |
-| `article` | Rendered Markdown body for Markdown files. |
-| `toc` | List of level-two headings from Markdown. |
-| `page.route` | Current public route, such as `/about/`. |
-| `page.source_chain` | Content files merged to build the page. |
-| `post` | Alias for the current context, useful in post templates. |
-| `collections.posts` | Default date-desc collection of listed pages under `/posts/`. |
-| `pages.all` | Listed page summaries for the whole site. |
-| `pages.children` | Listed direct children of the current route. |
-| `pages.section` | Listed pages in the same first path segment. |
-| `assets` | Colocated source assets copied for this page. |
-| `uses_mastodon_timeline` | Whether the current page needs timeline browser assets. |
-
-Useful globals and filters:
-
-```jinja
-{{ public_url(page.route) }}
-{{ image("cover", "card").url }}
-{{ vendor_url("webawesome", "webawesome.loader.js") }}
-{{ vendor_enabled("mastodon-comments") }}
-{{ date | date }}
-{{ title | slugify }}
-```
-
-`collections` can be customized per page:
-
-```yaml
-collections:
-  demo_posts:
-    under: /posts/
-    tag: demo
-    sort: title asc
-    limit: 5
-```
-
-## Template Selection and Routing
-
-Template selection uses this order:
-
-1. `template` or `bindings.template` in the content file.
-2. The most specific matching route rule in `content/site.yaml`.
-3. `templates.default`.
-
-Static pages under `content/pages/` default to the `static` template unless they set their own template.
-
-`routes` accepts exact paths and prefix globs ending in `/**`:
-
-```yaml
-routes:
-  - match: /posts/**
-    template: post
-  - match: /**
-    template: page
-```
-
-## YAML Expressions
-
-YAML values can call trusted zero-argument Python functions or read environment variables.
-
-```yaml
-site:
-  signal_line:
-    BUILD: python::demo_status
-    AUTHOR: "{{ site.author }}"
-
-deploy:
-  targets:
-    production:
-      password: env::EXAMPLE_FTP_PASSWORD
-```
-
-Expression resolution is recursive and copy-on-write. Function results are copied before being merged into page data, so later template work cannot mutate module-owned values.
-
-Missing functions, duplicate function names, failed imports, and missing environment variables raise errors that include the YAML path where resolution failed.
-
-## Custom Python Hooks
-
-Custom Python lives in site-owned modules declared by `colophon.yml`.
-
-```python
-from __future__ import annotations
-
-
-def demo_status() -> str:
-    return "READY"
-
-
-def docs_links() -> list[dict[str, str]]:
-    return [
-        {"label": "About", "href": "/about/"},
-        {"label": "Archive", "href": "/archive/"},
-    ]
-
-
-YAML_FUNCTIONS = {
-    "demo_status": demo_status,
-    "docs_links": docs_links,
-}
-```
-
-`YAML_FUNCTIONS` may be a mapping or a zero-argument function returning a mapping. Names must be unique across built-ins and all loaded modules. Custom code is trusted local code and runs during build.
-
-Built-in functions are also available:
-
-- `python::generate_random_color`
-- `python::generate_random_temperature`
-- `python::get_moon_phase`
-
-## Images and Static Assets
-
-Static files under `static/` are copied to the output root. For example, `static/styles.css` becomes `/styles.css`, and `static/assets/demo.svg` becomes `/assets/demo.svg`.
-
-Content images live under `content/images/` and are described by logical names in `content/images.yml`:
-
-```yaml
-images:
-  demo_card:
-    file: demo.ppm
-    alt: Generated demo image
-    width: 640
-    height: 360
-    fit: cover
-    crop: auto
-    variants:
-      thumb:
-        width: 320
-        height: 180
-```
-
-Use the `image()` helper in templates:
-
-```jinja
-{% set card = image("demo_card", "thumb") %}
-{% if card.exists %}
-  <img src="{{ card.url }}" alt="{{ card.alt }}" width="{{ card.width }}" height="{{ card.height }}">
-{% else %}
-  <p>Missing image: {{ card.label }}</p>
-{% endif %}
-```
-
-The result includes `exists`, `url`, `alt`, `class`, `width`, `height`, `fit`, `position`, `ratio`, `label`, `size`, and `fallback`.
-
-Direct image paths are also supported:
-
-```jinja
-{{ image("/assets/demo.svg").url }}
-{{ image("/images/original.png").url }}
-{{ image("https://example.test/image.jpg").url }}
-```
-
-Missing logical names return placeholders instead of failing the build. Generated derivatives are written under `_site/images/generated/`.
-
-## Browser Vendor Assets
-
-Vendor assets are configured in `colophon.yml` under `vendor`. Built-ins include `webawesome`, `dompurify`, `font-awesome`, `mastodon-comments`, and `mastodon-embed-timeline`.
-
-```yaml
-vendor:
-  mode: auto
-  local_dir: vendor
-  required:
-    - webawesome
-  assets:
-    dompurify:
-      enabled: true
-```
-
-Templates should use `vendor_url(name, path)` instead of hardcoded CDN or local paths:
-
-```jinja
-<script defer src="{{ vendor_url('dompurify', 'purify.min.js') }}"></script>
-```
-
-`auto` mode returns local URLs such as `/vendor/dompurify/purify.min.js` when the required files exist under `static/vendor/`; otherwise it returns CDN URLs. `cdn` always returns CDN URLs. `local` requires the files to exist and fails the build with a message to run:
-
-```bash
-colophon vendor download --config colophon.yml
-```
-
-Download selected assets with:
-
-```bash
-colophon vendor download --config colophon.yml --asset webawesome --force
-colophon vendor download --config colophon.yml --dry-run
-```
-
-## Archives, Tags, and Feeds
-
-Every build creates:
-
-- `/archive/` from `templates/archive.html`
-- `/tags/<tag>/` from `templates/tag.html`
-- `/feed.xml` from `templates/feed.xml`
-
-These pages use listed post summaries sorted by date descending. Tag routes are slugified from post tags.
-
-## Mastodon Timeline and Comments
-
-Mastodon support is static-site friendly. Colophon normalizes config and renders data needed by templates and browser-side components, but it does not fetch timelines during build.
-
-Site-level timeline config lives under `site.mastodon`:
-
-```yaml
-site:
-  mastodon:
-    enabled: true
-    host: social.example
-    user: alice
-    user_id: "123"
-    profile_name: "@alice"
-    timeline:
-      enabled: true
-      maxNbPostShow: "3"
-```
-
-Post comments can be enabled with explicit fields or a status URL:
-
-```yaml
-mastodon_comments:
-  status_url: https://social.example/@alice/123456
-```
-
-Templates can check normalized `mastodon_comments.enabled` and `uses_mastodon_timeline`.
-When those features render, Colophon marks the needed browser assets as active:
-DOMPurify, Font Awesome, and Mastodon comments for comment threads, and
-Mastodon embed timeline for timeline cards.
-
-## Deploy
-
-Deploy is optional and fully config-driven. A typical dry-run config:
-
-```yaml
-deploy:
-  default_target: production
-  steps:
-    - preflight_build
-    - build
-    - upload
-  targets:
-    production:
-      transport: ftps
-      host: example.test
-      username: deploy
-      password: env::EXAMPLE_FTP_PASSWORD
-      remote_path: public_html/example.test/
-      purge: true
-```
-
-Run without side effects:
-
-```bash
-EXAMPLE_FTP_PASSWORD=dummy colophon deploy --config colophon.yml --target production --dry-run
-```
-
-Supported upload transports are `ftp`, `ftps`, `sftp`, and `sshfs`. The default deploy step list is:
-
-```yaml
-steps:
-  - preflight_build
-  - mastodon_post
-  - enable_comments
-  - build
-  - upload
-```
-
-`mastodon_post` renders `deploy.mastodon.post_text` with `site` and selected `post` data. `enable_comments` can write the resulting status URL back to the selected post unless the run is a dry run.
-
-Remote purge has safety checks: the target must include a configured `remote_path`, and dry-run reports actions without uploading or deleting remote files.
-
-## Serve and Watch
-
-`serve` builds from the configured output directory and starts a local HTTP server:
-
-```bash
-colophon serve --config colophon.yml --watch --port 8000
-```
-
-With `--watch`, Colophon snapshots the configured content, templates, static directory, config file, and Python modules. A change triggers a rebuild and keeps serving the same output directory.
-
-`--test` starts the server briefly and stops automatically. It is intended for smoke tests.
-
-## Scaffold
-
-Create a neutral demo site:
-
-```bash
-colophon scaffold ./new-site
-cd ./new-site
-colophon build --config colophon.yml
-```
-
-The scaffold is intentionally plain. It demonstrates the feature set with concrete files and generated pages instead of inheriting any real site theme.
-
-The generated footer includes a placeholder Colophon project link at `https://github.com/your-org/colophon`; replace it in `content/site.yaml` when the real repository URL is ready.
-
-Use `--force` only when the destination is empty or when you intentionally want scaffold files overwritten.
-
-## Troubleshooting
-
-- `missing project config`: pass `--config` or run from a directory containing `colophon.yml`.
-- `unknown YAML function`: declare the function in a module listed under `python.modules`.
-- `duplicate YAML function name`: rename one function or remove one module.
-- `missing environment variable`: export the required variable or use `--dry-run` with dummy values for deploy tests.
-- Template errors around undefined values: check the content file and template variable names.
-- Missing images render as placeholders; inspect `content/images.yml` and `content/images/`.
-- Deploy upload errors usually come from missing host/user/path/password values or network credentials.
-
-## Migration Notes
-
-Colophon is designed to be version-controlled separately from a site. In this workspace, `colophon_repo/` is the generator repo and `libertaitech/` is the first external consumer.
-
-Local development command from `libertaitech/`:
-
-```bash
-PYTHONPATH=../colophon_repo/src ../colophon_repo/.venv/bin/python -m colophon build --config colophon.yml
-```
-
-Backward compatibility with the old embedded generator layout is intentionally removed.
+## AI Usage
+This application, including some parts of the code and documenation, were created with the assistance of AI tools. 

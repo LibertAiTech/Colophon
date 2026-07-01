@@ -28,12 +28,6 @@ Try deploy resolution without uploading:
 EXAMPLE_FTP_PASSWORD=dummy colophon deploy --config colophon.yml --dry-run
 ```
 
-When running from a sibling checkout of `colophon_repo`, use:
-
-```bash
-PYTHONPATH=../colophon_repo/src python -m colophon build --config colophon.yml
-```
-
 ## What to inspect
 
 - `content/site.yaml` defines site-wide data, navigation, route rules, and template aliases.
@@ -41,7 +35,7 @@ PYTHONPATH=../colophon_repo/src python -m colophon build --config colophon.yml
 - `content/pages/about.md` is a static Markdown page rendered at `/about/`.
 - `content/pages/features.yml` is a structured YAML page rendered at `/features/`.
 - `content/pages/template-variables.md` explains the variables templates receive.
-- `content/pages/images.md` demonstrates logical images, generated variants, direct static assets, and placeholders.
+- `content/pages/images.md` demonstrates logical images, generated variants, and direct static assets.
 - `content/pages/hooks.md` shows `python::` expressions loaded from `site_hooks.py`.
 - `content/pages/deploy.md` explains `content/deploy.example.yaml` and dry-run deploys.
 - `content/posts/` contains two posts so archive, tags, related posts, and feed output are visible.
@@ -50,8 +44,6 @@ PYTHONPATH=../colophon_repo/src python -m colophon build --config colophon.yml
 - `vendor` in `colophon.yml` controls browser dependencies such as WebAwesome,
   DOMPurify, Font Awesome, and Mastodon widgets.
 
-The default footer includes a placeholder Colophon project link at `https://github.com/your-org/colophon`; replace it in `content/site.yaml` when the real repository URL is ready.
-
 ## Custom Python
 
-`site_hooks.py` exports `YAML_FUNCTIONS`. YAML content can call those functions with `python::function_name`; the scaffold uses this for the header signal line, homepage docs links, and the hooks page.
+`site_hooks.py` exports `YAML_FUNCTIONS` for zero-argument hooks and `YAML_CONTEXT_FUNCTIONS` for page/frontmatter hooks. YAML content can call either form with `python::function_name`; the scaffold uses this for the header signal line, homepage links, generated summaries, page statistics, and the hooks page.
